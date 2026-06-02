@@ -128,6 +128,7 @@ struct ContentView: View {
     @State private var isPresentationMode = false
     @State private var savedDisplayMode: PDFDisplayMode = .singlePageContinuous
     @State private var savedAutoScales = true
+    @State private var savedScaleFactor: Double = 1.0
     @State private var savedColumnVisibility: NavigationSplitViewVisibility = .all
     
     @State private var currentPageRect: CGRect = .zero
@@ -476,6 +477,7 @@ struct ContentView: View {
         
         savedDisplayMode = displayMode
         savedAutoScales = autoScales
+        savedScaleFactor = scaleFactor
         savedColumnVisibility = columnVisibility
         
         displayMode = .singlePage
@@ -494,6 +496,7 @@ struct ContentView: View {
         
         displayMode = savedDisplayMode
         autoScales = savedAutoScales
+        scaleFactor = savedScaleFactor
         columnVisibility = savedColumnVisibility
         
         if let window = currentWindow, window.styleMask.contains(.fullScreen) {
