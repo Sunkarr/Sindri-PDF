@@ -204,6 +204,8 @@ struct SettingsView: View {
     @AppStorage("presentationProgressBarThickness") private var progressBarThickness: Double = 2.0
     @AppStorage("presentationProgressBarColor") private var progressBarHexColor: String = "#FF0000"
     
+    private let labelWidth: CGFloat = 110
+    
     var body: some View {
         TabView {
             // Tab 1: General Preferences
@@ -218,6 +220,7 @@ struct SettingsView: View {
                         HStack(spacing: 8) {
                             Text("Display Unit:")
                                 .foregroundColor(.secondary)
+                                .frame(width: labelWidth, alignment: .trailing)
                             Picker("", selection: $pageDimensionUnit) {
                                 Text("Millimeters (mm)").tag("mm")
                                 Text("Centimeters (cm)").tag("cm")
@@ -245,12 +248,20 @@ struct SettingsView: View {
                             .foregroundColor(.primary)
                         
                         VStack(alignment: .leading, spacing: 8) {
-                            Toggle("Open SimplePDF at login", isOn: $launchAtLogin)
-                                .onChange(of: launchAtLogin) { _, newValue in
-                                    LoginItemManager.setLaunchAtLogin(enabled: newValue)
-                                }
+                            HStack(spacing: 8) {
+                                Spacer()
+                                    .frame(width: labelWidth)
+                                Toggle("Open SimplePDF at login", isOn: $launchAtLogin)
+                                    .onChange(of: launchAtLogin) { _, newValue in
+                                        LoginItemManager.setLaunchAtLogin(enabled: newValue)
+                                    }
+                            }
                             
-                            Toggle("Restore last session on launch", isOn: $restoreSession)
+                            HStack(spacing: 8) {
+                                Spacer()
+                                    .frame(width: labelWidth)
+                                Toggle("Restore last session on launch", isOn: $restoreSession)
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -270,12 +281,17 @@ struct SettingsView: View {
                             .foregroundColor(.primary)
                         
                         VStack(alignment: .leading, spacing: 10) {
-                            Toggle("Show page progress bar", isOn: $showProgressBar)
+                            HStack(spacing: 8) {
+                                Spacer()
+                                    .frame(width: labelWidth)
+                                Toggle("Show page progress bar", isOn: $showProgressBar)
+                            }
                             
                             if showProgressBar {
                                 HStack(spacing: 8) {
                                     Text("Position:")
                                         .foregroundColor(.secondary)
+                                        .frame(width: labelWidth, alignment: .trailing)
                                     Picker("", selection: $progressBarPosition) {
                                         Text("Top").tag("top")
                                         Text("Bottom").tag("bottom")
@@ -287,6 +303,7 @@ struct SettingsView: View {
                                 HStack(spacing: 8) {
                                     Text("Thickness:")
                                         .foregroundColor(.secondary)
+                                        .frame(width: labelWidth, alignment: .trailing)
                                     Slider(value: $progressBarThickness, in: 1...10, step: 1)
                                         .labelsHidden()
                                     Text("\(Int(progressBarThickness)) px")
@@ -297,6 +314,7 @@ struct SettingsView: View {
                                 HStack(spacing: 8) {
                                     Text("Bar Color:")
                                         .foregroundColor(.secondary)
+                                        .frame(width: labelWidth, alignment: .trailing)
                                     ColorPicker("", selection: Binding(
                                         get: { Color(hex: progressBarHexColor) },
                                         set: { progressBarHexColor = $0.toHex() }
