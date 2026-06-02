@@ -12,10 +12,12 @@ class AppLogger {
     private let queue = DispatchQueue(label: "com.simplepdf.logger")
     
     init() {
-        setupLogFile()
+        // Log file is created lazily when first needed
     }
     
     private func setupLogFile() {
+        guard isEnabled else { return }
+        
         let fileManager = FileManager.default
         if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             let logDir = appSupport.appendingPathComponent("SimplePDF/Logs")
@@ -38,6 +40,10 @@ class AppLogger {
     
     func log(_ message: String, file: String = #file, function: String = #function, line: Int = #line) {
         guard isEnabled else { return }
+        
+        if logFileURL == nil {
+            setupLogFile()
+        }
         
         let fileName = (file as NSString).lastPathComponent
         let timestamp = ISO8601DateFormatter().string(from: Date())
