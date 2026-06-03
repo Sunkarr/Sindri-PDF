@@ -9,7 +9,7 @@ A lightweight, native macOS PDF viewer.
 
 ## Features
 - Native implementation using Swift and PDFKit.
-- Minimal UI footprint without sidebars or toolbars by default.
+- Minimal UI with some handy features.
 - Standalone `.dmg` installation.
 - Completely free and open-source, no telemetry or subscriptions.
 
