@@ -126,6 +126,12 @@ nav {
     color: var(--text-primary);
 }
 
+.github-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
 /* Buttons */
 .btn-primary {
     display: inline-flex;
