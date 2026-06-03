@@ -1,6 +1,6 @@
 # SimplePDF
 
-A lightweight, native macOS PDF viewer.
+A sleek, lightweight PDF viewer for macOS. No bloatware, no popups, and no subscription... ever.
 
 **[Download & Website ↗](https://sunkarr.github.io/simplePDF)**
 
