@@ -269,7 +269,7 @@ struct SettingsView: View {
                         .foregroundColor(.accentColor)
                     }
                     
-                    Link(destination: URL(string: "https://buymeacoffee.com/placeholder")!) {
+                    Link(destination: URL(string: "https://buymeacoffee.com/jonasbratschi")!) {
                         HStack {
                             Image(systemName: "cup.and.saucer.fill")
                             Text("Buy Me a Coffee (Support)")
