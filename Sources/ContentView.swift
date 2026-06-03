@@ -290,6 +290,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .ignoresSafeArea(isPresentationMode ? .all : [])
                 }
+                .ignoresSafeArea(isPresentationMode ? .all : [])
                 .toolbar(isPresentationMode ? .hidden : .visible, for: .windowToolbar)
                 .toolbar {
                     ToolbarItemGroup(placement: .primaryAction) {
