@@ -275,12 +275,14 @@ struct SimplePDFApp: App {
 extension NSWindow {
     @objc open override func newWindowForTab(_ sender: Any?) {
         let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [UTType.pdf]
         
-        if panel.runModal() == .OK, let url = panel.url {
-            NotificationCenter.default.post(name: Notification.Name("OpenPDFAsTab"), object: url)
+        if panel.runModal() == .OK {
+            for url in panel.urls {
+                NotificationCenter.default.post(name: Notification.Name("OpenPDFAsTab"), object: url)
+            }
         }
     }
 }

@@ -846,26 +846,32 @@ struct ContentView: View {
         )
         // Drag and drop registration
         .onDrop(of: [UTType.fileURL], isTargeted: $isDraggingOver) { providers in
-            guard let provider = providers.first else { return false }
+            guard !providers.isEmpty else { return false }
             
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
-                guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
-                
-                if url.pathExtension.lowercased() == "pdf" {
-                    guard self.isValidPDF(url: url) else {
-                        DispatchQueue.main.async {
-                            let alert = NSAlert()
-                            alert.messageText = "Invalid PDF File"
-                            alert.informativeText = "The selected file is either not a valid PDF or exceeds the size limit of \(self.maxPDFFileSizeMB) MB."
-                            alert.alertStyle = .warning
-                            alert.runModal()
+            for provider in providers {
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
+                    guard let data = item as? Data,
+                          let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                    
+                    if url.pathExtension.lowercased() == "pdf" {
+                        guard self.isValidPDF(url: url) else {
+                            DispatchQueue.main.async {
+                                let alert = NSAlert()
+                                alert.messageText = "Invalid PDF File"
+                                alert.informativeText = "The file '\(url.lastPathComponent)' is either not a valid PDF or exceeds the size limit."
+                                alert.alertStyle = .warning
+                                alert.runModal()
+                            }
+                            return
                         }
-                        return
-                    }
-                    DispatchQueue.main.async {
-                        self.fileURL = url
-                        self.loadPDF()
+                        DispatchQueue.main.async {
+                            if self.fileURL == nil {
+                                self.fileURL = url
+                                self.loadPDF()
+                            } else {
+                                self.openWindow(value: url)
+                            }
+                        }
                     }
                 }
             }
@@ -919,18 +925,22 @@ struct ContentView: View {
     // Choose file dialog
     private func selectPDFFile() {
         let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.pdf]
         
         if panel.runModal() == .OK {
-            if let url = panel.url {
-                guard self.isValidPDF(url: url) else { return }
+            for url in panel.urls {
+                guard self.isValidPDF(url: url) else { continue }
                 if focusWindow(showing: url) {
-                    return
+                    continue
                 }
-                self.fileURL = url
-                self.loadPDF()
+                if self.fileURL == nil {
+                    self.fileURL = url
+                    self.loadPDF()
+                } else {
+                    openWindow(value: url)
+                }
             }
         }
     }
@@ -938,15 +948,15 @@ struct ContentView: View {
     // Open new PDF as tab (Cmd+O) — loads in current window if empty, else new tab
     private func openNewPDF() {
         let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.pdf]
         
         if panel.runModal() == .OK {
-            if let url = panel.url {
-                guard self.isValidPDF(url: url) else { return }
+            for url in panel.urls {
+                guard self.isValidPDF(url: url) else { continue }
                 if focusWindow(showing: url) {
-                    return
+                    continue
                 }
                 if fileURL == nil {
                     self.fileURL = url
@@ -961,27 +971,26 @@ struct ContentView: View {
     // Open new PDF in a completely separate window (Cmd+N)
     private func openNewPDFInNewWindow() {
         let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.pdf]
         
         if panel.runModal() == .OK {
-            if let url = panel.url {
-                guard self.isValidPDF(url: url) else { return }
-                if focusWindow(showing: url) {
-                    return
-                }
-                // Always open in a new window by temporarily disabling tab merging
-                openWindow(value: url)
-                // After the window appears, detach it from the tab group
+            let validURLs = panel.urls.filter { self.isValidPDF(url: $0) && !focusWindow(showing: $0) }
+            if let firstURL = validURLs.first {
+                openWindow(value: firstURL)
+                
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     if let newWindow = NSApplication.shared.windows.last(where: { $0.isVisible && $0.canBecomeKey }) {
                         newWindow.tabbingMode = .disallowed
                         newWindow.moveTabToNewWindow(nil)
                         newWindow.tabbingMode = .preferred
-                        // Ensure tab bar stays visible on the new window
                         if let tabGroup = newWindow.tabGroup, !tabGroup.isTabBarVisible {
                             newWindow.toggleTabBar(nil)
+                        }
+                        
+                        for url in validURLs.dropFirst() {
+                            self.openWindow(value: url)
                         }
                     }
                 }
