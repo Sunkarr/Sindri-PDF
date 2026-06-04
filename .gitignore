@@ -1,0 +1,5 @@
+.DS_Store
+.build/
+SimplePDF.app/
+debug.txt
+debug_log.txt

@@ -45,6 +45,7 @@ struct SettingsBackup: Codable {
     var presentationProgressBarColor: String?
     var enableDebugLogging: Bool?
     var sidebarWidth: Double?
+    var maxPDFFileSizeMB: Int?
     
     var launchAtLogin: Bool?
     
@@ -230,6 +231,7 @@ struct SettingsView: View {
     @AppStorage("presentationProgressBarColor") private var progressBarHexColor: String = "#FF0000"
     
     @AppStorage("enableDebugLogging") private var enableDebugLogging: Bool = false
+    @AppStorage("maxPDFFileSizeMB") private var maxPDFFileSizeMB: Int = 250
     
     @State private var selectedTab: String = "credits"
     
@@ -534,6 +536,34 @@ struct SettingsView: View {
                         RoundedRectangle(cornerRadius: 8)
                             .stroke(Color.gray.opacity(0.15), lineWidth: 1)
                     )
+                    
+                    // Section 7: Security
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Security")
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                        
+                        HStack(spacing: 8) {
+                            Spacer()
+                                .frame(width: labelWidth)
+                            Text("Max PDF File Size:")
+                                .foregroundColor(.secondary)
+                            TextField("MB", value: $maxPDFFileSizeMB, formatter: NumberFormatter())
+                                .textFieldStyle(RoundedBorderTextFieldStyle())
+                                .frame(width: 60)
+                            Text("MB")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+                    )
                 }
                 .padding(20)
             }
@@ -638,6 +668,7 @@ struct SettingsView: View {
         backup.presentationProgressBarColor = ud.string(forKey: "presentationProgressBarColor")
         backup.enableDebugLogging = ud.object(forKey: "enableDebugLogging") as? Bool
         backup.sidebarWidth = ud.double(forKey: "sidebarWidth")
+        backup.maxPDFFileSizeMB = ud.object(forKey: "maxPDFFileSizeMB") as? Int
         
         backup.launchAtLogin = LoginItemManager.isLaunchAtLoginEnabled
         
@@ -693,6 +724,7 @@ struct SettingsView: View {
             if let val = backup.presentationProgressBarColor { ud.set(val, forKey: "presentationProgressBarColor") }
             if let val = backup.enableDebugLogging { ud.set(val, forKey: "enableDebugLogging") }
             if let val = backup.sidebarWidth, val > 0 { ud.set(val, forKey: "sidebarWidth") }
+            if let val = backup.maxPDFFileSizeMB { ud.set(val, forKey: "maxPDFFileSizeMB") }
             
             if let val = backup.launchAtLogin {
                 LoginItemManager.setLaunchAtLogin(enabled: val)

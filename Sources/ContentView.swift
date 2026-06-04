@@ -133,6 +133,7 @@ struct ContentView: View {
     
     @AppStorage("sidebarWidth") private var sidebarWidth: Double = 250.0
     @AppStorage("shortcut_zoomFit") private var zoomFitShortcutData: Data?
+    @AppStorage("maxPDFFileSizeMB") private var maxPDFFileSizeMB: Int = 250
     
     // Presentation Mode states
     @State private var isPresentationMode = false
@@ -852,6 +853,16 @@ struct ContentView: View {
                       let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
                 
                 if url.pathExtension.lowercased() == "pdf" {
+                    guard self.isValidPDF(url: url) else {
+                        DispatchQueue.main.async {
+                            let alert = NSAlert()
+                            alert.messageText = "Invalid PDF File"
+                            alert.informativeText = "The selected file is either not a valid PDF or exceeds the size limit of \(self.maxPDFFileSizeMB) MB."
+                            alert.alertStyle = .warning
+                            alert.runModal()
+                        }
+                        return
+                    }
                     DispatchQueue.main.async {
                         self.fileURL = url
                         self.loadPDF()
@@ -865,6 +876,18 @@ struct ContentView: View {
     // Load PDFDocument from fileURL state
     private func loadPDF() {
         guard let url = fileURL else {
+            pdfDocument = nil
+            updateRegistry()
+            return
+        }
+        
+        guard isValidPDF(url: url) else {
+            let alert = NSAlert()
+            alert.messageText = "Invalid PDF File"
+            alert.informativeText = "The file is either not a valid PDF or exceeds the size limit of \(maxPDFFileSizeMB) MB."
+            alert.alertStyle = .warning
+            alert.runModal()
+            self.fileURL = nil
             pdfDocument = nil
             updateRegistry()
             return
@@ -902,6 +925,7 @@ struct ContentView: View {
         
         if panel.runModal() == .OK {
             if let url = panel.url {
+                guard self.isValidPDF(url: url) else { return }
                 if focusWindow(showing: url) {
                     return
                 }
@@ -920,6 +944,7 @@ struct ContentView: View {
         
         if panel.runModal() == .OK {
             if let url = panel.url {
+                guard self.isValidPDF(url: url) else { return }
                 if focusWindow(showing: url) {
                     return
                 }
@@ -942,6 +967,7 @@ struct ContentView: View {
         
         if panel.runModal() == .OK {
             if let url = panel.url {
+                guard self.isValidPDF(url: url) else { return }
                 if focusWindow(showing: url) {
                     return
                 }
@@ -1015,5 +1041,26 @@ struct ContentView: View {
             OpenDocumentsRegistry.shared.register(window: window, for: newURL)
             registeredURL = newURL
         }
+    }
+    
+    private func isValidPDF(url: URL) -> Bool {
+        // 1. Check file size
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let fileSize = attributes[.size] as? NSNumber {
+            if fileSize.intValue > maxPDFFileSizeMB * 1024 * 1024 {
+                print("Validation failed: File size \(fileSize.intValue) exceeds limit of \(maxPDFFileSizeMB) MB")
+                return false
+            }
+        }
+        
+        // 2. Check Magic Bytes ("%PDF-")
+        guard let fileHandle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? fileHandle.close() }
+        let data = fileHandle.readData(ofLength: 5)
+        if let string = String(data: data, encoding: .utf8), string.hasPrefix("%PDF-") {
+            return true
+        }
+        print("Validation failed: Invalid magic bytes")
+        return false
     }
 }

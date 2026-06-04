@@ -702,6 +702,8 @@ class PDFImageScanner {
     var ctmStack: [CGAffineTransform] = []
     var imageRects: [CGRect] = []
     let page: CGPDFPage
+    var operationCount = 0
+    let maxOperations = 100_000 // Defensive limit
     
     init(page: CGPDFPage) {
         self.page = page
@@ -716,12 +718,20 @@ class PDFImageScanner {
         CGPDFOperatorTableSetCallback(table, "q") { (_, info) in
             guard let info = info else { return }
             let scannerState = Unmanaged<PDFImageScanner>.fromOpaque(info).takeUnretainedValue()
-            scannerState.ctmStack.append(scannerState.currentCTM)
+            scannerState.operationCount += 1
+            if scannerState.operationCount > scannerState.maxOperations { return }
+            
+            if scannerState.ctmStack.count < 500 {
+                scannerState.ctmStack.append(scannerState.currentCTM)
+            }
         }
         
         CGPDFOperatorTableSetCallback(table, "Q") { (_, info) in
             guard let info = info else { return }
             let scannerState = Unmanaged<PDFImageScanner>.fromOpaque(info).takeUnretainedValue()
+            scannerState.operationCount += 1
+            if scannerState.operationCount > scannerState.maxOperations { return }
+            
             if !scannerState.ctmStack.isEmpty {
                 scannerState.currentCTM = scannerState.ctmStack.removeLast()
             }
@@ -730,6 +740,8 @@ class PDFImageScanner {
         CGPDFOperatorTableSetCallback(table, "cm") { (scanner, info) in
             guard let info = info else { return }
             let scannerState = Unmanaged<PDFImageScanner>.fromOpaque(info).takeUnretainedValue()
+            scannerState.operationCount += 1
+            if scannerState.operationCount > scannerState.maxOperations { return }
             
             var ty: CGPDFReal = 0
             var tx: CGPDFReal = 0
@@ -752,6 +764,8 @@ class PDFImageScanner {
         CGPDFOperatorTableSetCallback(table, "Do") { (scanner, info) in
             guard let info = info else { return }
             let scannerState = Unmanaged<PDFImageScanner>.fromOpaque(info).takeUnretainedValue()
+            scannerState.operationCount += 1
+            if scannerState.operationCount > scannerState.maxOperations { return }
             
             var name: UnsafePointer<Int8>? = nil
             if CGPDFScannerPopName(scanner, &name), let name = name {
