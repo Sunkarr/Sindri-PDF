@@ -407,10 +407,18 @@ footer p {
 
 /* Responsive */
 @media (max-width: 768px) {
+    .glow-orb.red {
+        width: 300px;
+        height: 300px;
+        right: -150px;
+        opacity: 0.5;
+    }
+
     .hero {
         flex-direction: column;
         text-align: center;
-        padding: 60px 0;
+        padding: 40px 0;
+        gap: 40px;
     }
     
     h1 {
@@ -418,13 +426,25 @@ footer p {
     }
     
     .cta-group {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 16px;
+    }
+
+    .cta-group a {
+        width: 100%;
         justify-content: center;
+    }
+
+    .mockup {
+        transform: none !important;
+        height: 400px;
     }
     
     .about-card {
         flex-direction: column-reverse;
         text-align: center;
-        padding: 32px;
+        padding: 32px 24px;
         gap: 32px;
     }
     
