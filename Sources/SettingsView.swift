@@ -94,7 +94,7 @@ struct LoginItemManager {
                 }
             }
         } catch {
-            print("SimplePDF: Failed to change login item status: \(error.localizedDescription)")
+            print("sindriPDF: Failed to change login item status: \(error.localizedDescription)")
         }
     }
     
@@ -245,7 +245,7 @@ struct SettingsView: View {
                 BrandLogoView(size: 80)
                 
                 VStack(spacing: 6) {
-                    Text("SimplePDF")
+                    Text("sindriPDF")
                         .font(.title)
                         .fontWeight(.bold)
                     Text("Version 1.0")
@@ -336,7 +336,7 @@ struct SettingsView: View {
                             HStack(spacing: 8) {
                                 Spacer()
                                     .frame(width: labelWidth)
-                                Toggle("Open SimplePDF at login", isOn: $launchAtLogin)
+                                Toggle("Open sindriPDF at login", isOn: $launchAtLogin)
                                     .onChange(of: launchAtLogin) { _, newValue in
                                         LoginItemManager.setLaunchAtLogin(enabled: newValue)
                                     }
@@ -370,11 +370,11 @@ struct SettingsView: View {
                                 Text("Default PDF Reader")
                                     .foregroundColor(.primary)
                                 if isDefaultApp {
-                                    Text("SimplePDF is already standard app for PDF")
+                                    Text("sindriPDF is already standard app for PDF")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                 } else {
-                                    Text("Make SimplePDF your default application for viewing PDFs")
+                                    Text("Make sindriPDF your default application for viewing PDFs")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                 }
@@ -520,7 +520,7 @@ struct SettingsView: View {
                                 Spacer()
                                     .frame(width: labelWidth)
                                 Button("Report an Issue") {
-                                    if let url = URL(string: "https://github.com/Sunkarr/simplePDF/issues") {
+                                    if let url = URL(string: "https://github.com/Sunkarr/sindriPDF/issues") {
                                         NSWorkspace.shared.open(url)
                                     }
                                 }
@@ -633,6 +633,14 @@ struct SettingsView: View {
             checkDefaultApp()
         }
         .frame(width: 440, height: 420)
+        .background(
+            Button("") {
+                NSApplication.shared.keyWindow?.close()
+            }
+            .keyboardShortcut(.escape, modifiers: [])
+            .opacity(0)
+            .allowsHitTesting(false)
+        )
     }
     
     private func checkDefaultApp() {
@@ -651,7 +659,7 @@ struct SettingsView: View {
                     checkDefaultApp()
                 }
             } catch {
-                print("SimplePDF: Failed to set default application: \(error)")
+                print("sindriPDF: Failed to set default application: \(error)")
             }
         }
     }
@@ -695,7 +703,7 @@ struct SettingsView: View {
         
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "SimplePDF_Settings.json"
+        panel.nameFieldStringValue = "sindriPDF_Settings.json"
         
         if panel.runModal() == .OK, let url = panel.url {
             try? jsonData.write(to: url)

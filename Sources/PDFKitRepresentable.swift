@@ -178,17 +178,24 @@ class CustomPDFView: PDFView, PDFDocumentDelegate {
                 if let hostWindow = otherWindows.first {
                     hasMergedIntoTabGroup = true
                     
-                    // Match the frame of the host window exactly so that adding it as a tab doesn't cause a resize
+                    // Match the frame synchronously so the window is the right size instantly and doesn't flash
                     NSAnimationContext.beginGrouping()
                     NSAnimationContext.current.duration = 0
                     window.setFrame(hostWindow.frame, display: false, animate: false)
-                    
-                    let lastTab = hostWindow.tabGroup?.windows.last ?? hostWindow
-                    lastTab.makeKey()
-                    lastTab.addTabbedWindow(window, ordered: .above)
-                    // Select this new tab so it becomes active
-                    window.makeKey()
                     NSAnimationContext.endGrouping()
+                    
+                    // Defer the tab group manipulation to avoid layout-time AppKit exceptions
+                    DispatchQueue.main.async {
+                        NSAnimationContext.beginGrouping()
+                        NSAnimationContext.current.duration = 0
+                        
+                        let lastTab = hostWindow.tabGroup?.windows.last ?? hostWindow
+                        lastTab.makeKey()
+                        lastTab.addTabbedWindow(window, ordered: .above)
+                        // Select this new tab so it becomes active
+                        window.makeKey()
+                        NSAnimationContext.endGrouping()
+                    }
                 }
             }
             

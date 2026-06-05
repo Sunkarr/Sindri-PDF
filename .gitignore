@@ -1,6 +1,6 @@
 .DS_Store
 .build/
-SimplePDF.app/
+sindriPDF.app/
 debug.txt
 debug_log.txt
 test_scrollview

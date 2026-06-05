@@ -2,16 +2,16 @@
 import PackageDescription
 
 let package = Package(
-    name: "SimplePDF",
+    name: "sindriPDF",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "SimplePDF", targets: ["SimplePDF"])
+        .executable(name: "sindriPDF", targets: ["sindriPDF"])
     ],
     targets: [
         .executableTarget(
-            name: "SimplePDF",
+            name: "sindriPDF",
             dependencies: [],
             path: "Sources"
         )

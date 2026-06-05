@@ -54,35 +54,15 @@ struct WindowAccessor: NSViewRepresentable {
     }
 }
 
-// Brand logo view displaying "simple" on top and "PDF" on bottom
 struct BrandLogoView: View {
     let size: CGFloat
     
     var body: some View {
-        ZStack {
-            // Squircle background with a beautiful red gradient
-            RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color(red: 0.95, green: 0.15, blue: 0.15), Color(red: 0.78, green: 0.05, blue: 0.05)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .frame(width: size, height: size)
-                .shadow(color: Color.black.opacity(0.18), radius: size * 0.04, y: size * 0.02)
-            
-            // Centered stacked lettering matching the redesigned App Icon
-            VStack(spacing: size * 0.015) {
-                Text("simple")
-                    .font(.system(size: size * 0.115, weight: .medium, design: .default))
-                    .foregroundColor(.white.opacity(0.9))
-                Text("PDF")
-                    .font(.system(size: size * 0.22, weight: .black, design: .default))
-                    .foregroundColor(.white)
-            }
-        }
-        .frame(width: size, height: size)
+        Image(nsImage: NSImage(named: "AppIcon") ?? NSImage())
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .shadow(color: Color.black.opacity(0.18), radius: size * 0.04, y: size * 0.02)
     }
 }
 
@@ -329,7 +309,7 @@ struct ContentView: View {
                 landingPageView
             }
         }
-        .navigationTitle(fileURL?.lastPathComponent ?? "SimplePDF")
+        .navigationTitle(fileURL?.lastPathComponent ?? "sindriPDF")
         .onAppear {
             loadPDF()
             restoreSavedSessionIfFirstWindow()
@@ -529,6 +509,7 @@ struct ContentView: View {
         )
         .background(
             WindowAccessor(shouldClose: shouldCloseWindow) { window in
+                guard self.currentWindow != window else { return }
                 self.currentWindow = window
                 self.updateRegistry()
                 
@@ -766,11 +747,11 @@ struct ContentView: View {
               
         // Find or create the sort button
         let sortBtn: NSButton
-        if let existing = container.subviews.first(where: { $0.identifier?.rawValue == "SimplePDFSortButton" }) as? NSButton {
+        if let existing = container.subviews.first(where: { $0.identifier?.rawValue == "sindriPDFSortButton" }) as? NSButton {
             sortBtn = existing
         } else {
             sortBtn = NSButton(image: NSImage(systemSymbolName: "arrow.up.arrow.down", accessibilityDescription: "Sort Tabs")!, target: TabBarButtonTarget.shared, action: #selector(TabBarButtonTarget.sortTabs))
-            sortBtn.identifier = NSUserInterfaceItemIdentifier("SimplePDFSortButton")
+            sortBtn.identifier = NSUserInterfaceItemIdentifier("sindriPDFSortButton")
             
             // Match the native look of the newTabButton (bezelStyle rawValue 16 is .inline)
             let asBtn = newTabButton as? NSButton
@@ -844,7 +825,7 @@ struct ContentView: View {
                 .padding(.bottom, 10)
             
             VStack(spacing: 8) {
-                Text("Simple PDF")
+                Text("sindriPDF")
                     .font(.system(size: 32, weight: .bold, design: .rounded))
                     .foregroundColor(.primary)
                 

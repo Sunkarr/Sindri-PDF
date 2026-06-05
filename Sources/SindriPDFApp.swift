@@ -203,13 +203,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct SimplePDFApp: App {
+struct SindriPDFApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var initialURL: URL? = nil
     
     init() {
         let currentApp = NSRunningApplication.current
-        let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.jonas.SimplePDF")
+        let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.jonas.sindriPDF")
             .filter { $0 != currentApp }
         
         if !runningApps.isEmpty {
