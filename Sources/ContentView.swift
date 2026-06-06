@@ -829,7 +829,7 @@ struct ContentView: View {
                     .font(.system(size: 32, weight: .bold, design: .rounded))
                     .foregroundColor(.primary)
                 
-                Text("Crisp, Fast, & Distraction-Free")
+                Text("Crisp, Fast & Distraction-Free")
                     .font(.title3)
                     .fontWeight(.medium)
                     .foregroundColor(.secondary)

@@ -337,15 +337,21 @@ struct SettingsView: View {
                                 Spacer()
                                     .frame(width: labelWidth)
                                 Toggle("Open Sindri PDF at login", isOn: $launchAtLogin)
+                                    .toggleStyle(.switch)
+                                    .labelsHidden()
                                     .onChange(of: launchAtLogin) { _, newValue in
                                         LoginItemManager.setLaunchAtLogin(enabled: newValue)
                                     }
+                                Text("Open Sindri PDF at login")
                             }
                             
                             HStack(spacing: 8) {
                                 Spacer()
                                     .frame(width: labelWidth)
                                 Toggle("Restore last session on launch", isOn: $restoreSession)
+                                    .toggleStyle(.switch)
+                                    .labelsHidden()
+                                Text("Restore last session on launch")
                             }
                         }
                     }
@@ -409,6 +415,9 @@ struct SettingsView: View {
                                 Spacer()
                                     .frame(width: labelWidth)
                                 Toggle("Show page progress bar", isOn: $showProgressBar)
+                                    .toggleStyle(.switch)
+                                    .labelsHidden()
+                                Text("Show page progress bar")
                             }
                             
                             if showProgressBar {
@@ -506,6 +515,9 @@ struct SettingsView: View {
                                 Spacer()
                                     .frame(width: labelWidth)
                                 Toggle("Enable Debug Logging", isOn: $enableDebugLogging)
+                                    .toggleStyle(.switch)
+                                    .labelsHidden()
+                                Text("Enable Debug Logging")
                             }
                             
                             HStack(spacing: 8) {
