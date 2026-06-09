@@ -10,9 +10,11 @@ class WindowCloseProxy: NSObject, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         let tabCount = sender.tabGroup?.windows.count ?? 1
         if tabCount <= 1 {
-            // Last tab — post notification to return to landing page
-            NotificationCenter.default.post(name: Notification.Name("ReturnToLandingPage"), object: sender)
-            return false
+            // Only intercept to show the landing page if this window actually has an open document
+            if OpenDocumentsRegistry.shared.url(for: sender) != nil {
+                NotificationCenter.default.post(name: Notification.Name("ReturnToLandingPage"), object: sender)
+                return false
+            }
         }
         return originalDelegate?.windowShouldClose?(sender) ?? true
     }
@@ -174,6 +176,9 @@ class CustomPDFView: PDFView, PDFDocumentDelegate {
                         if let tabGroup = window.tabGroup, !tabGroup.isTabBarVisible {
                             window.toggleTabBar(nil)
                         }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            OpenQueue.shared.processNext()
+                        }
                     }
                     return
                 }
@@ -211,6 +216,16 @@ class CustomPDFView: PDFView, PDFDocumentDelegate {
                         // Restore visibility
                         window.alphaValue = 1.0
                         NSAnimationContext.endGrouping()
+                        
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            OpenQueue.shared.processNext()
+                        }
+                    }
+                } else {
+                    // No other windows to merge with; this is the first/anchor window.
+                    // Notify OpenQueue to proceed with subsequent files.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        OpenQueue.shared.processNext()
                     }
                 }
             }

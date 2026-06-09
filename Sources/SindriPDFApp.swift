@@ -242,6 +242,17 @@ struct SindriPDFApp: App {
                 }
             }
         }
+        
+        // Register Apple Event handler early for subsequent document opens
+        if !AppleEventsHandler.hasRegistered {
+            AppleEventsHandler.hasRegistered = true
+            NSAppleEventManager.shared().setEventHandler(
+                AppleEventsHandler.shared,
+                andSelector: #selector(AppleEventsHandler.handleOpenDocsEvent(_:withReplyEvent:)),
+                forEventClass: AEEventClass(kCoreEventClass),
+                andEventID: AEEventID(kAEOpenDocuments)
+            )
+        }
     }
     
     var body: some Scene {
@@ -280,9 +291,7 @@ extension NSWindow {
         panel.allowedContentTypes = [UTType.pdf]
         
         if panel.runModal() == .OK, !panel.urls.isEmpty {
-            // Send all URLs in a single notification so the handler can
-            // process them sequentially without key-window race conditions
-            NotificationCenter.default.post(name: Notification.Name("OpenPDFAsTab"), object: panel.urls)
+            OpenQueue.shared.add(urls: panel.urls)
         }
     }
 }
@@ -366,9 +375,76 @@ class OpenDocumentsRegistry {
     }
 }
 
+class OpenQueue {
+    static let shared = OpenQueue()
+    private var urls: [URL] = []
+    private let lock = NSLock()
+    private var isProcessing = false
+    private var timeoutTimer: Timer? = nil
+    
+    func add(urls: [URL]) {
+        lock.lock()
+        // Filter out duplicates that are already in the queue
+        let uniqueNew = urls.filter { newURL in
+            !self.urls.contains(where: { $0.standardized.path == newURL.standardized.path })
+        }
+        self.urls.append(contentsOf: uniqueNew)
+        let shouldStart = !isProcessing
+        if shouldStart {
+            isProcessing = true
+        }
+        lock.unlock()
+        
+        if shouldStart {
+            processNext()
+        }
+    }
+    
+    func processNext() {
+        lock.lock()
+        timeoutTimer?.invalidate()
+        timeoutTimer = nil
+        
+        guard !urls.isEmpty else {
+            isProcessing = false
+            lock.unlock()
+            return
+        }
+        let nextURL = urls.removeFirst()
+        lock.unlock()
+        
+        DispatchQueue.main.async {
+            // Start a 3.0s timeout to prevent getting stuck if a window fails to open
+            self.timeoutTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+                print("OpenQueue: Timeout waiting for window to open, moving to next.")
+                self?.processNext()
+            }
+            
+            NotificationCenter.default.post(name: Notification.Name("OpenSinglePDF"), object: nextURL)
+        }
+    }
+}
+
 class AppleEventsHandler: NSObject {
     static let shared = AppleEventsHandler()
     static var hasRegistered = false
+    
+    private var pendingURLs: [URL] = []
+    private let lock = NSLock()
+    
+    func appendPendingURLs(_ urls: [URL]) {
+        lock.lock()
+        defer { lock.unlock() }
+        pendingURLs.append(contentsOf: urls)
+    }
+    
+    func consumePendingURLs() -> [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        let urls = pendingURLs
+        pendingURLs.removeAll()
+        return urls
+    }
     
     @objc func handleOpenDocsEvent(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
         guard let filesList = event.paramDescriptor(forKeyword: keyDirectObject) else { return }
@@ -381,25 +457,24 @@ class AppleEventsHandler: NSObject {
             }
         }
         
-        for url in urls {
-            DispatchQueue.main.async {
+        guard !urls.isEmpty else { return }
+        
+        DispatchQueue.main.async {
+            // Filter out URLs that are already open and just focus them
+            let urlsToOpen = urls.filter { url in
                 if focusWindow(showing: url) {
-                    return
+                    return false
                 }
-                
-                let hasVisibleWindows = !NSApp.windows.filter({ $0.isVisible && $0.canBecomeKey }).isEmpty
-                if !hasVisibleWindows {
-                    // Temporarily remove our custom handler and let SwiftUI handle opening a new window
-                    NSAppleEventManager.shared().removeEventHandler(
-                        forEventClass: AEEventClass(kCoreEventClass),
-                        andEventID: AEEventID(kAEOpenDocuments)
-                    )
-                    AppleEventsHandler.hasRegistered = false
-                    
-                    NSWorkspace.shared.open([url], withApplicationAt: Bundle.main.bundleURL, configuration: NSWorkspace.OpenConfiguration())
-                } else {
-                    NotificationCenter.default.post(name: Notification.Name("OpenPDFAsTab"), object: url)
-                }
+                return true
+            }
+            
+            guard !urlsToOpen.isEmpty else { return }
+            
+            let hasVisibleWindows = !NSApp.windows.filter({ $0.isVisible && $0.canBecomeKey }).isEmpty
+            if !hasVisibleWindows {
+                self.appendPendingURLs(urlsToOpen)
+            } else {
+                OpenQueue.shared.add(urls: urlsToOpen)
             }
         }
     }

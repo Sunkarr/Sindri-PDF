@@ -332,15 +332,10 @@ struct ContentView: View {
                 setupTabBarButtons()
             }
             
-            // Register Apple Event handler for subsequent document opens
-            if !AppleEventsHandler.hasRegistered {
-                AppleEventsHandler.hasRegistered = true
-                NSAppleEventManager.shared().setEventHandler(
-                    AppleEventsHandler.shared,
-                    andSelector: #selector(AppleEventsHandler.handleOpenDocsEvent(_:withReplyEvent:)),
-                    forEventClass: AEEventClass(kCoreEventClass),
-                    andEventID: AEEventID(kAEOpenDocuments)
-                )
+            // Check for any pending URLs from Apple Events
+            let pending = AppleEventsHandler.shared.consumePendingURLs()
+            if !pending.isEmpty {
+                OpenQueue.shared.add(urls: pending)
             }
         }
         .onDisappear {
@@ -369,40 +364,24 @@ struct ContentView: View {
                 openWindow(value: url)
             }
         }
-        // Handle PDF opening requests from the native tab bar '+' button
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("OpenPDFAsTab"))) { notification in
+        // Handle single PDF opening requests from the OpenQueue
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("OpenSinglePDF"))) { notification in
             let isPrimaryWindow = currentWindow?.isKeyWindow == true || (NSApp.keyWindow == nil && NSApp.windows.filter({ $0.isVisible && $0.canBecomeKey }).first == currentWindow)
             guard isPrimaryWindow else { return }
             
-            // Accept both a single URL or an array of URLs
-            var urls: [URL] = []
-            if let singleURL = notification.object as? URL {
-                urls = [singleURL]
-            } else if let multipleURLs = notification.object as? [URL] {
-                urls = multipleURLs
+            guard let url = notification.object as? URL else { return }
+            
+            if focusWindow(showing: url) {
+                OpenQueue.shared.processNext()
+                return
             }
             
-            for (index, url) in urls.enumerated() {
-                if index == 0 {
-                    // First URL: handle synchronously (fill empty window or open immediately)
-                    if focusWindow(showing: url) {
-                        continue
-                    }
-                    if fileURL == nil {
-                        self.fileURL = url
-                        self.loadPDF()
-                    } else {
-                        openWindow(value: url)
-                    }
-                } else {
-                    // Subsequent URLs: stagger so SwiftUI can materialize each window
-                    let delayedURL = url
-                    DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.3) {
-                        if !focusWindow(showing: delayedURL) {
-                            openWindow(value: delayedURL)
-                        }
-                    }
-                }
+            if fileURL == nil {
+                self.fileURL = url
+                self.loadPDF()
+                OpenQueue.shared.processNext()
+            } else {
+                openWindow(value: url)
             }
         }
         // Handle middle-click close on the last tab → return to landing page
@@ -450,6 +429,16 @@ struct ContentView: View {
                 // Force AppKit to update the tab title and proxy icon
                 window.representedURL = newURL
                 window.title = newURL.lastPathComponent
+                
+                DispatchQueue.main.async {
+                    window.representedURL = newURL
+                    window.title = newURL.lastPathComponent
+                }
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    window.representedURL = newURL
+                    window.title = newURL.lastPathComponent
+                }
                 
                 DLog("SwapDocumentURL: successfully loaded \(newURL.lastPathComponent)")
             } else {
@@ -597,9 +586,13 @@ struct ContentView: View {
     
     // Close the current tab, or return to the landing page if it is the last tab
     private func closeCurrentDocument() {
-        guard pdfDocument != nil else { return } // Already on landing page
-        
         let currentWindow = self.currentWindow ?? NSApp.keyWindow
+        
+        guard pdfDocument != nil else {
+            // Already on landing page: close the window
+            currentWindow?.close()
+            return
+        }
         
         // Check how many tabs are in the current tab group
         let tabbedWindowCount = currentWindow?.tabGroup?.windows.count ?? 1
@@ -914,6 +907,10 @@ struct ContentView: View {
             return
         }
         
+        if let currentDoc = pdfDocument, currentDoc.documentURL?.standardized.path == url.standardized.path {
+            return
+        }
+        
         guard let resolvedURL = validateAndResolvePDF(url: url) else {
             let alert = NSAlert()
             alert.messageText = "Invalid PDF File"
@@ -958,6 +955,16 @@ struct ContentView: View {
             // Force window to update its title and proxy icon
             currentWindow?.representedURL = resolvedURL
             currentWindow?.title = resolvedURL.lastPathComponent
+            
+            DispatchQueue.main.async {
+                self.currentWindow?.representedURL = resolvedURL
+                self.currentWindow?.title = resolvedURL.lastPathComponent
+            }
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.currentWindow?.representedURL = resolvedURL
+                self.currentWindow?.title = resolvedURL.lastPathComponent
+            }
         }
     }
     
@@ -969,16 +976,9 @@ struct ContentView: View {
         panel.allowedContentTypes = [.pdf]
         
         if panel.runModal() == .OK {
-            for url in panel.urls {
-                guard let resolved = self.validateAndResolvePDF(url: url) else { continue }
-                if focusWindow(showing: resolved) {
-                    continue
-                }
-                if self.fileURL == nil {
-                    self.fileURL = resolved // triggers loadPDF automatically via onChange
-                } else {
-                    openWindow(value: resolved)
-                }
+            let resolvedURLs = panel.urls.compactMap { self.validateAndResolvePDF(url: $0) }
+            if !resolvedURLs.isEmpty {
+                OpenQueue.shared.add(urls: resolvedURLs)
             }
         }
     }
@@ -991,16 +991,9 @@ struct ContentView: View {
         panel.allowedContentTypes = [.pdf]
         
         if panel.runModal() == .OK {
-            for url in panel.urls {
-                guard let resolved = self.validateAndResolvePDF(url: url) else { continue }
-                if focusWindow(showing: resolved) {
-                    continue
-                }
-                if fileURL == nil {
-                    self.fileURL = resolved
-                } else {
-                    openWindow(value: resolved)
-                }
+            let resolvedURLs = panel.urls.compactMap { self.validateAndResolvePDF(url: $0) }
+            if !resolvedURLs.isEmpty {
+                OpenQueue.shared.add(urls: resolvedURLs)
             }
         }
     }
@@ -1022,17 +1015,7 @@ struct ContentView: View {
             if let firstURL = validURLs.first {
                 // Register the first URL to be opened in a separate window
                 OpenDocumentsRegistry.shared.registerSeparateWindow(for: firstURL)
-                openWindow(value: firstURL)
-                
-                // Subsequent URLs (if multiple files were selected) should be opened as tabs in this new window.
-                // We open them after a short delay to allow the new window to be registered as the key window.
-                if validURLs.count > 1 {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        for url in validURLs.dropFirst() {
-                            self.openWindow(value: url)
-                        }
-                    }
-                }
+                OpenQueue.shared.add(urls: validURLs)
             }
         }
     }
@@ -1054,23 +1037,9 @@ struct ContentView: View {
         guard otherWindows.count <= 1 else { return }
         
         if let paths = UserDefaults.standard.stringArray(forKey: "OpenPDFPaths"), !paths.isEmpty {
-            // Load the first saved document in the current window
-            let firstPath = paths[0]
-            let firstURL = URL(fileURLWithPath: firstPath)
-            if FileManager.default.fileExists(atPath: firstURL.path) {
-                self.fileURL = firstURL
-                self.loadPDF()
-            }
-            
-            // Open the remaining documents in new tab windows
-            if paths.count > 1 {
-                for i in 1..<paths.count {
-                    let path = paths[i]
-                    let url = URL(fileURLWithPath: path)
-                    if FileManager.default.fileExists(atPath: url.path) {
-                        openWindow(value: url)
-                    }
-                }
+            let urls = paths.map { URL(fileURLWithPath: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
+            if !urls.isEmpty {
+                OpenQueue.shared.add(urls: urls)
             }
         }
     }
