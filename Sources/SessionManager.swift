@@ -27,6 +27,12 @@ class SessionManager: NSObject {
         )
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(handleWindowDidMove(_:)),
+            name: NSWindow.didMoveNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(handleWindowWillClose(_:)),
             name: NSWindow.willCloseNotification,
             object: nil
@@ -43,8 +49,17 @@ class SessionManager: NSObject {
         updateCurrentSession(window)
     }
     
+    @objc private func handleWindowDidMove(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, isDocumentWindow(window) else { return }
+        // When a tab is dragged out to form a separate window (e.g. for split-screen),
+        // it moves to a new screen position. Update currentSessionWindow and pendingHostWindow
+        // so newly opened PDFs open directly into this detached window.
+        updateCurrentSession(window)
+    }
+    
     @objc private func handleWindowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, isDocumentWindow(window) else { return }
+        DLog("SessionManager: window '\(window.title)' (ID: \(window.windowNumber)) is closing")
         if pendingHostWindow == window {
             pendingHostWindow = nil
         }
@@ -83,7 +98,7 @@ class SessionManager: NSObject {
             currentSessionWindow = main
             return main
         }
-        if let current = currentSessionWindow, isDocumentWindow(current) {
+        if let current = currentSessionWindow, isDocumentWindow(current), current.windowNumber > 0 {
             return current
         }
         let fallback = eligibleDocumentWindows.first
@@ -92,15 +107,44 @@ class SessionManager: NSObject {
     }
     
     var eligibleDocumentWindows: [NSWindow] {
-        return NSApp.windows.filter { isDocumentWindow($0) }
+        return NSApp.orderedWindows.filter { isDocumentWindow($0) }
+    }
+    
+    /// Returns the best candidate host window for merging a new window into,
+    /// explicitly excluding the new window itself.
+    func candidateHostWindow(excluding target: NSWindow) -> NSWindow? {
+        if let pending = pendingHostWindow, pending != target, isDocumentWindow(pending) {
+            return pending
+        }
+        if let current = currentSessionWindow, current != target, isDocumentWindow(current) {
+            return current
+        }
+        if let active = activeSessionWindow, active != target, isDocumentWindow(active) {
+            return active
+        }
+        return eligibleDocumentWindows.first(where: { $0 != target })
     }
     
     func isDocumentWindow(_ window: NSWindow) -> Bool {
-        return window.canBecomeKey &&
-               !window.className.contains("Panel") &&
-               !window.className.contains("NSColorPanel") &&
-               !window.className.contains("NSFontPanel") &&
-               !window.className.contains("NSOpenPanel")
+        guard window.canBecomeKey else { return false }
+        guard !window.className.contains("Panel"),
+              !window.className.contains("NSColorPanel"),
+              !window.className.contains("NSFontPanel"),
+              !window.className.contains("NSOpenPanel") else {
+            return false
+        }
+        // Exclude Settings / Preferences / Credits windows
+        if window.title == "Credits" || window.title == "Settings" || window.title == "Sindri PDF Settings" {
+            return false
+        }
+        if let id = window.identifier?.rawValue, id.contains("Settings") {
+            return false
+        }
+        // If window has a tabbing identifier set, it must be the Sindri tab group
+        if !window.tabbingIdentifier.isEmpty {
+            return window.tabbingIdentifier == "SindriPDFTabGroup"
+        }
+        return true
     }
     
     /// Merges all open split windows/sessions back into a single window tab group

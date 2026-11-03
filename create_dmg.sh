@@ -7,10 +7,10 @@ DMG_TEMP_DIR="dmg_input"
 cleanup() {
   echo "=== Cleaning up temporary build artifacts ==="
   
-  # 1. Detach any lingering temporary dmg mounts
-  hdiutil info | grep -o "/Volumes/dmg\.[a-zA-Z0-9]*" | while read -r mount_point; do
+  # 1. Detach any lingering temporary dmg mounts or Sindri PDF mounts
+  hdiutil info | grep -o "/Volumes/[^	]*" | grep -E "(/Volumes/dmg\.|/Volumes/Sindri)" | while read -r mount_point; do
     echo "Detaching leftover mount point $mount_point..."
-    hdiutil detach "$mount_point" -force || true
+    hdiutil detach "$mount_point" -force 2>/dev/null || true
   done
   
   # 2. Remove temporary packaging directory
@@ -20,6 +20,19 @@ cleanup() {
   
   # 3. Clean up any leftover rw.*.dmg temporary files
   rm -f rw.*.Sindri\ PDF.dmg rw.*.dmg 2>/dev/null || true
+  
+  # 4. Unregister temporary build copies and volume copies from macOS LaunchServices
+  LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+  if [ -x "$LSREGISTER" ]; then
+    "$LSREGISTER" -dump 2>/dev/null | grep -o "/Volumes/[^()]*Sindri PDF[^()]*" | sort -u | while read -r p; do
+      "$LSREGISTER" -u "$p" 2>/dev/null || true
+    done
+    "$LSREGISTER" -u "$PWD/$DMG_TEMP_DIR/Sindri PDF.app" 2>/dev/null || true
+    "$LSREGISTER" -u "$PWD/Sindri PDF.app" 2>/dev/null || true
+    if [ -d "/Applications/Sindri PDF.app" ]; then
+      "$LSREGISTER" -f "/Applications/Sindri PDF.app" 2>/dev/null || true
+    fi
+  fi
 }
 
 # Run cleanup on script exit (whether successful or aborted)
@@ -75,3 +88,14 @@ if ! create-dmg \
 fi
 
 echo "=== DMG Build Completed Successfully: Sindri PDF.dmg ==="
+
+# Step 4: Keep installed version in /Applications in sync and clean duplicate app
+echo "Updating installed /Applications/Sindri PDF.app..."
+rm -rf "/Applications/Sindri PDF.app"
+cp -R "Sindri PDF.app" "/Applications/"
+if [ -x "$LSREGISTER" ]; then
+  "$LSREGISTER" -f "/Applications/Sindri PDF.app" 2>/dev/null || true
+  "$LSREGISTER" -u "$PWD/Sindri PDF.app" 2>/dev/null || true
+fi
+# Remove local duplicate bundle so macOS LaunchServices only sees /Applications/Sindri PDF.app
+rm -rf "Sindri PDF.app"

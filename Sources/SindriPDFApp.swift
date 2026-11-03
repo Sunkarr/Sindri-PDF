@@ -184,7 +184,12 @@ func saveOpenDocuments() {
 func focusWindow(showing url: URL, excluding currentWindow: NSWindow? = nil) -> Bool {
     let normalized = url.resolvingSymlinksInPath().standardized
     if let window = OpenDocumentsRegistry.shared.window(showing: normalized), window != currentWindow {
+        NSApp.activate(ignoringOtherApps: true)
+        if let tabGroup = window.tabGroup {
+            tabGroup.selectedWindow = window
+        }
         window.makeKeyAndOrderFront(nil)
+        SessionManager.shared.updateCurrentSession(window)
         return true
     }
     return false
@@ -218,6 +223,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func application(_ application: NSApplication, open urls: [URL]) {
         DLog("AppDelegate.application(open urls): count=\(urls.count) urls=\(urls.map { $0.lastPathComponent })")
+        AppleEventsHandler.shared.hasReceivedExternalURLs = true
         NSApp.activate(ignoringOtherApps: true)
         if let activeWin = SessionManager.shared.activeSessionWindow {
             activeWin.makeKeyAndOrderFront(nil)
@@ -253,6 +259,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return true
     }
+    
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        let docs = OpenDocumentsRegistry.shared.allDocuments()
+        guard !docs.isEmpty else { return nil }
+        
+        for doc in docs {
+            let item = NSMenuItem(
+                title: doc.title,
+                action: #selector(AppDelegate.selectDocumentFromDock(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = doc.window
+            if doc.isSelected {
+                item.state = .on
+            }
+            menu.addItem(item)
+        }
+        return menu
+    }
+    
+    @objc func selectDocumentFromDock(_ sender: NSMenuItem) {
+        guard let window = sender.representedObject as? NSWindow else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        if let tabGroup = window.tabGroup {
+            tabGroup.selectedWindow = window
+        }
+        window.makeKeyAndOrderFront(nil)
+        SessionManager.shared.updateCurrentSession(window)
+    }
 }
 
 @main
@@ -265,6 +302,8 @@ struct SindriPDFApp: App {
         let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.jonas.SindriPDF")
             .filter { $0 != currentApp }
         
+        DLog("SindriPDFApp.init: currentApp=\(currentApp.processIdentifier), runningApps=\(runningApps.map { $0.processIdentifier }), arguments=\(CommandLine.arguments)")
+        
         if !runningApps.isEmpty {
             // Activate the existing running instance
             runningApps.first?.activate()
@@ -273,8 +312,10 @@ struct SindriPDFApp: App {
             let fileArgs = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
             let urls = fileArgs.map { URL(fileURLWithPath: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
             if !urls.isEmpty {
+                DLog("SindriPDFApp.init: forwarding \(urls.count) URLs via NSWorkspace to PID \(runningApps.first!.processIdentifier)")
                 NSWorkspace.shared.open(urls, withApplicationAt: runningApps.first!.bundleURL!, configuration: NSWorkspace.OpenConfiguration())
             }
+            DLog("SindriPDFApp.init: exiting secondary instance (PID \(getpid()))")
             exit(0)
         }
         
@@ -302,9 +343,8 @@ struct SindriPDFApp: App {
     }
     
     var body: some Scene {
-        // Main window (shows landing page by default, or initial URL)
-        Window("Sindri PDF", id: "main") {
-            ContentView(fileURL: initialURL)
+        WindowGroup(for: URL.self) { $url in
+            ContentView(fileURL: url ?? initialURL)
                 .frame(minWidth: 800, minHeight: 600)
         }
         .commands {
@@ -314,12 +354,6 @@ struct SindriPDFApp: App {
             CloseCommands()
             FileJumpCommands()
             ViewCommands()
-        }
-        
-        // Window group for opening subsequent files as tabs
-        WindowGroup(for: URL.self) { $url in
-            ContentView(fileURL: url)
-                .frame(minWidth: 800, minHeight: 600)
         }
         
         Settings {
@@ -400,14 +434,14 @@ class OpenDocumentsRegistry {
         lock.lock()
         defer { lock.unlock() }
         let path = url.resolvingSymlinksInPath().standardized.path
-        if let window = openDocuments[path], window.isVisible {
+        if let window = openDocuments[path], window.windowNumber > 0, (window.isVisible || window.tabGroup != nil) {
             return window
         }
         
         // Fallback case-insensitive search
         let lowercasePath = path.lowercased()
         for (openPath, window) in openDocuments {
-            if openPath.lowercased() == lowercasePath && window.isVisible {
+            if openPath.lowercased() == lowercasePath, window.windowNumber > 0, (window.isVisible || window.tabGroup != nil) {
                 return window
             }
         }
@@ -429,8 +463,33 @@ class OpenDocumentsRegistry {
         lock.lock()
         defer { lock.unlock() }
         return openDocuments.compactMap { path, window in
-            return window.isVisible ? path : nil
+            return (window.windowNumber > 0 && (window.isVisible || window.tabGroup != nil)) ? path : nil
         }
+    }
+    
+    struct DocumentInfo {
+        let title: String
+        let url: URL
+        let window: NSWindow
+        let isSelected: Bool
+    }
+    
+    func allDocuments() -> [DocumentInfo] {
+        lock.lock()
+        defer { lock.unlock() }
+        var result: [DocumentInfo] = []
+        for (path, window) in openDocuments {
+            guard window.windowNumber > 0, (window.isVisible || window.tabGroup != nil) else { continue }
+            let url = URL(fileURLWithPath: path)
+            let isSelected = window.isKeyWindow || (window.tabGroup?.selectedWindow == window)
+            result.append(DocumentInfo(
+                title: window.title.isEmpty ? url.lastPathComponent : window.title,
+                url: url,
+                window: window,
+                isSelected: isSelected
+            ))
+        }
+        return result.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 }
 
@@ -440,25 +499,18 @@ class OpenQueue {
     private var currentURL: URL? = nil
     private let lock = NSLock()
     private var isProcessing = false
-    private var isReady = false
     private var timeoutTimer: Timer? = nil
     
-    func markReady() {
+    var currentProcessingURL: URL? {
         lock.lock()
-        let wasReady = isReady
-        isReady = true
-        let shouldStart = !isProcessing && !urls.isEmpty
-        if shouldStart {
-            isProcessing = true
-        }
-        DLog("OpenQueue.markReady: wasReady=\(wasReady), shouldStart=\(shouldStart), queuedCount=\(urls.count)")
-        lock.unlock()
-        
-        if !wasReady && shouldStart {
-            DispatchQueue.main.async { [weak self] in
-                self?.processNext()
-            }
-        }
+        defer { lock.unlock() }
+        return currentURL ?? urls.first
+    }
+    
+    var hasPendingURLs: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !urls.isEmpty || currentURL != nil
     }
     
     func add(urls: [URL]) {
@@ -471,8 +523,8 @@ class OpenQueue {
             return !isCurrent && !isQueued
         }
         self.urls.append(contentsOf: uniqueNew)
-        DLog("OpenQueue.add: added=\(uniqueNew.map { $0.lastPathComponent }), totalQueued=\(self.urls.map { $0.lastPathComponent }), isReady=\(isReady), isProcessing=\(isProcessing)")
-        let shouldStart = isReady && !isProcessing
+        DLog("OpenQueue.add: added=\(uniqueNew.map { $0.lastPathComponent }), totalQueued=\(self.urls.map { $0.lastPathComponent }), isProcessing=\(isProcessing)")
+        let shouldStart = !isProcessing
         if shouldStart {
             isProcessing = true
         }
@@ -518,6 +570,7 @@ class AppleEventsHandler: NSObject {
     static let shared = AppleEventsHandler()
     static var hasRegistered = false
     
+    var hasReceivedExternalURLs = false
     private var pendingURLs: [URL] = []
     private let lock = NSLock()
     
@@ -559,6 +612,7 @@ class AppleEventsHandler: NSObject {
         }
         
         guard !urls.isEmpty else { return }
+        self.hasReceivedExternalURLs = true
         DLog("DEBUG handleOpenDocsEvent: received \(urls.count) URLs: \(urls.map { $0.lastPathComponent })")
         
         DispatchQueue.main.async {
@@ -584,10 +638,8 @@ class AppleEventsHandler: NSObject {
             
             if SessionManager.shared.eligibleDocumentWindows.isEmpty {
                 self.appendPendingURLs(urlsToOpen)
-                _ = NSApp.delegate?.applicationShouldHandleReopen?(NSApp, hasVisibleWindows: false)
-            } else {
-                OpenQueue.shared.add(urls: urlsToOpen)
             }
+            OpenQueue.shared.add(urls: urlsToOpen)
         }
     }
 }

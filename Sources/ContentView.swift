@@ -31,6 +31,7 @@ struct WindowAccessor: NSViewRepresentable {
             if let window = view.window {
                 onWindowFound(window)
                 if shouldClose {
+                    DLog("WindowAccessor: shouldClose=true, closing window '\(window.title)'")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                         window.close()
                     }
@@ -45,6 +46,7 @@ struct WindowAccessor: NSViewRepresentable {
             if let window = nsView.window {
                 onWindowFound(window)
                 if shouldClose {
+                    DLog("WindowAccessor: shouldClose=true, closing window '\(window.title)'")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                         window.close()
                     }
@@ -90,8 +92,17 @@ struct ContentView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     
     init(fileURL: URL? = nil) {
-        self._fileURL = State(initialValue: fileURL)
-        self._columnVisibility = State(initialValue: fileURL != nil ? .all : .detailOnly)
+        let targetURL = fileURL ?? OpenQueue.shared.currentProcessingURL
+        self._fileURL = State(initialValue: targetURL)
+        self._columnVisibility = State(initialValue: targetURL != nil ? .all : .detailOnly)
+        if let url = targetURL {
+            let path = url.resolvingSymlinksInPath().path
+            if FileManager.default.fileExists(atPath: path),
+               let doc = PDFDocument(url: url) {
+                self._pdfDocument = State(initialValue: doc)
+                self._totalPages = State(initialValue: doc.pageCount)
+            }
+        }
     }
     
     // Search overlay state
@@ -299,6 +310,8 @@ struct ContentView: View {
                         isPresented: $isInspectorPresented
                     )
                 }
+            } else if fileURL != nil {
+                Color(NSColor.underPageBackgroundColor)
             } else {
                 landingPageView
             }
@@ -373,6 +386,9 @@ struct ContentView: View {
             if fileURL == nil {
                 self.fileURL = url
                 self.loadPDF()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    OpenQueue.shared.processNext()
+                }
             } else {
                 if let win = currentWindow {
                     SessionManager.shared.pendingHostWindow = win
@@ -525,27 +541,33 @@ struct ContentView: View {
                 guard self.currentWindow != window else { return }
                 self.currentWindow = window
                 self.updateRegistry()
-                SessionManager.shared.updateCurrentSession(window)
-                OpenQueue.shared.markReady()
-                
-                // Suppress toolbar right-click context menu
-                if let toolbar = window.toolbar {
-                    toolbar.allowsUserCustomization = false
-                    if toolbar.responds(to: NSSelectorFromString("setAllowsDisplayModeCustomization:")) {
-                        toolbar.perform(NSSelectorFromString("setAllowsDisplayModeCustomization:"), with: false as NSNumber)
-                    }
-                }
-                if let superview = window.contentView?.superview {
-                    superview.menu = nil
-                }
-                
-                // Match frame to existing host window as early as possible to prevent resize flash
-                if let hostWindow = SessionManager.shared.pendingHostWindow ?? SessionManager.shared.activeSessionWindow, hostWindow != window {
+                // If this window was created to open a document in an existing session, merge it into the host
+                if let hostWindow = SessionManager.shared.consumePendingHostWindow(), hostWindow != window {
+                    // Hide new window visually to prevent any flash before tab merging completes
+                    window.alphaValue = 0.0
                     window.setFrame(hostWindow.frame, display: false, animate: false)
+                    
+                    DispatchQueue.main.async {
+                        if hostWindow.tabGroup?.windows.contains(window) != true {
+                            let targetTab = hostWindow.tabGroup?.windows.last ?? hostWindow
+                            targetTab.addTabbedWindow(window, ordered: .above)
+                            if let tabGroup = window.tabGroup, !tabGroup.isTabBarVisible {
+                                window.toggleTabBar(nil)
+                            }
+                        }
+                        window.alphaValue = 1.0
+                        window.makeKeyAndOrderFront(nil)
+                        SessionManager.shared.updateCurrentSession(window)
+                        OpenQueue.shared.processNext()
+                    }
+                } else {
+                    SessionManager.shared.updateCurrentSession(window)
+                    OpenQueue.shared.processNext()
                 }
                 
                 if let url = fileURL {
                     if let existingWindow = OpenDocumentsRegistry.shared.window(showing: url), existingWindow != window {
+                        DLog("WindowAccessor: duplicate detected for \(url.lastPathComponent), closing window '\(window.title)' (ID: \(window.windowNumber))")
                         existingWindow.makeKeyAndOrderFront(nil)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                             window.close()
@@ -590,14 +612,26 @@ struct ContentView: View {
     
     private var isHandlingWindow: Bool {
         guard let window = currentWindow else { return false }
-        guard let activeSession = SessionManager.shared.activeSessionWindow else { return false }
         
-        if let tabGroup = activeSession.tabGroup {
-            if let selected = tabGroup.selectedWindow {
+        // If there is an active session window, prefer its selected tab or itself
+        if let activeSession = SessionManager.shared.activeSessionWindow {
+            if let tabGroup = activeSession.tabGroup, let selected = tabGroup.selectedWindow {
                 return selected == window
             }
+            if activeSession == window {
+                return true
+            }
         }
-        return activeSession == window
+        
+        // Fallback: If activeSession is nil or in transition, let the frontmost eligible window handle it
+        if let firstEligible = SessionManager.shared.eligibleDocumentWindows.first {
+            if let tabGroup = firstEligible.tabGroup, let selected = tabGroup.selectedWindow {
+                return selected == window
+            }
+            return firstEligible == window
+        }
+        
+        return false
     }
     
     // Close the current tab, or return to the landing page if it is the last tab
@@ -921,6 +955,9 @@ struct ContentView: View {
             
             group.notify(queue: .main) {
                 if !resolvedURLs.isEmpty {
+                    if let win = self.currentWindow {
+                        SessionManager.shared.updateCurrentSession(win)
+                    }
                     OpenQueue.shared.add(urls: resolvedURLs)
                 }
             }
@@ -940,11 +977,6 @@ struct ContentView: View {
         }
         
         guard let resolvedURL = validateAndResolvePDF(url: url) else {
-            let alert = NSAlert()
-            alert.messageText = "Invalid PDF File"
-            alert.informativeText = "The file is either not a valid PDF or exceeds the size limit of \(maxPDFFileSizeMB) MB."
-            alert.alertStyle = .warning
-            alert.runModal()
             self.fileURL = nil
             pdfDocument = nil
             updateRegistry()
@@ -962,6 +994,7 @@ struct ContentView: View {
         
         if let window = currentWindow {
             if focusWindow(showing: resolvedURL, excluding: window) {
+                DLog("loadPDF: duplicate detected for \(resolvedURL.lastPathComponent), closing window '\(window.title)' (ID: \(window.windowNumber))")
                 OpenQueue.shared.processNext()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     window.close()
@@ -1049,6 +1082,11 @@ struct ContentView: View {
     private func restoreSavedSessionIfFirstWindow() {
         guard fileURL == nil else { return }
         
+        // If the app was launched to open external documents, do not restore previous session
+        if AppleEventsHandler.shared.hasReceivedExternalURLs || OpenQueue.shared.hasPendingURLs {
+            return
+        }
+        
         let shouldRestore = UserDefaults.standard.object(forKey: "RestoreSessionOnLaunch") as? Bool ?? true
         guard shouldRestore else { return }
         
@@ -1092,40 +1130,50 @@ struct ContentView: View {
     }
     
     private func validateAndResolvePDF(url: URL) -> URL? {
-        var resolvedURL: URL? = nil
-        var coordinationError: NSError?
+        let path = url.resolvingSymlinksInPath().path
         
-        // Use NSFileCoordinator to ensure iCloud files are downloaded and accessible
-        let coordinator = NSFileCoordinator(filePresenter: nil)
-        coordinator.coordinate(readingItemAt: url, options: .withoutChanges, error: &coordinationError) { readURL in
-            // 1. Check file size
-            if let attributes = try? FileManager.default.attributesOfItem(atPath: readURL.path),
-               let fileSize = attributes[.size] as? NSNumber {
-                if fileSize.intValue > maxPDFFileSizeMB * 1024 * 1024 {
-                    print("Validation failed: File size \(fileSize.intValue) exceeds limit of \(maxPDFFileSizeMB) MB")
-                    return
-                }
-            }
-            
-            // 2. Check Magic Bytes ("%PDF-")
-            guard let fileHandle = try? FileHandle(forReadingFrom: readURL) else {
-                print("Validation failed: Could not open file handle")
-                return
-            }
-            defer { try? fileHandle.close() }
-            let data = fileHandle.readData(ofLength: 5)
-            if let string = String(data: data, encoding: .utf8), string.hasPrefix("%PDF-") {
-                resolvedURL = readURL
-            } else {
-                print("Validation failed: Invalid magic bytes")
+        // 1. Check file size
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+           let fileSize = attributes[.size] as? UInt64 {
+            let maxBytes = UInt64(maxPDFFileSizeMB) * 1024 * 1024
+            if fileSize > maxBytes {
+                let alert = NSAlert()
+                alert.messageText = "File Too Large"
+                alert.informativeText = "The file '\(url.lastPathComponent)' exceeds the maximum allowed size of \(maxPDFFileSizeMB) MB."
+                alert.alertStyle = .warning
+                alert.runModal()
+                return nil
             }
         }
         
-        if let error = coordinationError {
-            print("Validation failed: File coordination error: \(error.localizedDescription)")
+        // 2. Check Magic Bytes ("%PDF-") safely
+        var isPDF = false
+        if let stream = InputStream(url: url) {
+            stream.open()
+            var buffer = [UInt8](repeating: 0, count: 5)
+            let bytesRead = stream.read(&buffer, maxLength: 5)
+            stream.close()
+            if bytesRead == 5 && buffer == [0x25, 0x50, 0x44, 0x46, 0x2D] { // %PDF-
+                isPDF = true
+            }
+        }
+        
+        // Fallback: Test if PDFKit can open the document
+        if !isPDF {
+            if PDFDocument(url: url) != nil {
+                isPDF = true
+            }
+        }
+        
+        guard isPDF else {
+            let alert = NSAlert()
+            alert.messageText = "Invalid PDF Document"
+            alert.informativeText = "The file '\(url.lastPathComponent)' is not a valid PDF document."
+            alert.alertStyle = .warning
+            alert.runModal()
             return nil
         }
         
-        return resolvedURL
+        return url
     }
 }

@@ -56,6 +56,8 @@ cat <<EOF > "$APP_DIR/Contents/Info.plist"
     <string>14.0</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>LSMultipleInstancesProhibited</key>
+    <true/>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

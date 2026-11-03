@@ -86,6 +86,13 @@ class CustomPDFView: PDFView, PDFDocumentDelegate {
         }
     }
     
+    override func mouseDown(with event: NSEvent) {
+        if let window = self.window {
+            SessionManager.shared.updateCurrentSession(window)
+        }
+        super.mouseDown(with: event)
+    }
+    
     override func otherMouseDown(with event: NSEvent) {
         if event.buttonNumber == 2 {
             if let scrollView = findScrollView() {
@@ -172,66 +179,8 @@ class CustomPDFView: PDFView, PDFDocumentDelegate {
             window.tabbingMode = .preferred
             window.tabbingIdentifier = "SindriPDFTabGroup"
             
-            // Merge this window into the target session's tab group to ensure tabs are used
-            // Only run once per window to prevent resize flashes from repeated viewDidMoveToWindow calls
-            if !TabBarButtonTarget.isSorting && !hasMergedIntoTabGroup {
-                let hostWindow = SessionManager.shared.consumePendingHostWindow() ?? SessionManager.shared.activeSessionWindow
-                if let hostWindow = hostWindow, hostWindow != window {
-                    if let tabGroup = hostWindow.tabGroup, tabGroup.windows.contains(window) {
-                        DLog("viewDidMoveToWindow: window '\(window.title)' is already part of hostWindow's tabGroup")
-                        hasMergedIntoTabGroup = true
-                        SessionManager.shared.updateCurrentSession(window)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                            OpenQueue.shared.processNext()
-                        }
-                        return
-                    }
-                    DLog("viewDidMoveToWindow: merging '\(window.title)' into hostWindow='\(hostWindow.title)'")
-                    hasMergedIntoTabGroup = true
-                    
-                    // Hide the window visually before merging it to prevent a brief separate window flash
-                    window.alphaValue = 0.0
-                    
-                    // Match the frame synchronously so the window is the right size instantly and doesn't flash
-                    NSAnimationContext.beginGrouping()
-                    NSAnimationContext.current.duration = 0
-                    window.setFrame(hostWindow.frame, display: false, animate: false)
-                    NSAnimationContext.endGrouping()
-                    
-                    // Defer the tab group manipulation to avoid layout-time AppKit exceptions
-                    DispatchQueue.main.async {
-                        NSAnimationContext.beginGrouping()
-                        NSAnimationContext.current.duration = 0
-                        
-                        let targetTab = hostWindow.tabGroup?.windows.last ?? hostWindow
-                        targetTab.makeKey()
-                        targetTab.addTabbedWindow(window, ordered: .above)
-                        // Select this new tab so it becomes active
-                        window.makeKey()
-                        
-                        // Restore visibility
-                        window.alphaValue = 1.0
-                        NSAnimationContext.endGrouping()
-                        
-                        SessionManager.shared.updateCurrentSession(window)
-                        
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                            OpenQueue.shared.processNext()
-                        }
-                    }
-                } else {
-                    // No other windows to merge with; this is the first/anchor window or split session.
-                    // Notify OpenQueue to proceed with subsequent files.
-                    SessionManager.shared.updateCurrentSession(window)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        OpenQueue.shared.processNext()
-                    }
-                }
-            }
-            
-
-            // Show the Apple tab bar by default if it is currently hidden
-            if let tabGroup = window.tabGroup, !tabGroup.isTabBarVisible {
+            // Show the Apple tab bar if multiple tabs exist
+            if let tabGroup = window.tabGroup, !tabGroup.isTabBarVisible && tabGroup.windows.count > 1 {
                 window.toggleTabBar(nil)
             }
             
@@ -498,7 +447,6 @@ struct PDFViewRepresentable: NSViewRepresentable {
     
     func makeNSView(context: Context) -> CustomPDFView {
         pdfView.document = document
-        pdfView.autoScales = autoScales
         pdfView.displayMode = displayMode
         pdfView.isPresentationMode = isPresentationMode
         pdfView.backgroundColor = isPresentationMode ? NSColor.black : NSColor.windowBackgroundColor
@@ -510,7 +458,14 @@ struct PDFViewRepresentable: NSViewRepresentable {
         }
         
         context.coordinator.updateCurrentPage()
-        context.coordinator.updateScaleFactor()
+        
+        // Defer autoScales and initial scale sync until view is in window to prevent PDFKit scale recursion
+        DispatchQueue.main.async {
+            if self.autoScales {
+                self.pdfView.autoScales = true
+            }
+            context.coordinator.updateScaleFactor()
+        }
         
         return pdfView
     }
@@ -559,8 +514,11 @@ struct PDFViewRepresentable: NSViewRepresentable {
                 if autoScales {
                     // If autoScales is turned on, sync the scale factor back to state
                     DLog("updateNSView: AutoScales is true, syncing scaleFactor state to \(nsView.scaleFactor)")
-                    DispatchQueue.main.async {
-                        self.scaleFactor = Double(nsView.scaleFactor)
+                    let currentScale = Double(nsView.scaleFactor)
+                    if currentScale > 0 && currentScale.isFinite {
+                        DispatchQueue.main.async {
+                            self.scaleFactor = currentScale
+                        }
                     }
                 }
             }
@@ -763,7 +721,10 @@ class PDFImageScanner {
     
     func scan() -> [CGRect] {
         let contentStream = CGPDFContentStreamCreateWithPage(page)
+        defer { CGPDFContentStreamRelease(contentStream) }
+        
         guard let table = CGPDFOperatorTableCreate() else { return [] }
+        defer { CGPDFOperatorTableRelease(table) }
         
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         
@@ -807,7 +768,8 @@ class PDFImageScanner {
                CGPDFScannerPopNumber(scanner, &d),
                CGPDFScannerPopNumber(scanner, &c),
                CGPDFScannerPopNumber(scanner, &b),
-               CGPDFScannerPopNumber(scanner, &a) {
+               CGPDFScannerPopNumber(scanner, &a),
+               a.isFinite && b.isFinite && c.isFinite && d.isFinite && tx.isFinite && ty.isFinite {
                 let transform = CGAffineTransform(a: a, b: b, c: c, d: d, tx: tx, ty: ty)
                 scannerState.currentCTM = transform.concatenating(scannerState.currentCTM)
             }
@@ -825,12 +787,15 @@ class PDFImageScanner {
                 if scannerState.isImage(objectName) {
                     let unitRect = CGRect(x: 0, y: 0, width: 1, height: 1)
                     let rect = unitRect.applying(scannerState.currentCTM)
-                    scannerState.imageRects.append(rect)
+                    if rect.origin.x.isFinite && rect.origin.y.isFinite && rect.size.width.isFinite && rect.size.height.isFinite {
+                        scannerState.imageRects.append(rect)
+                    }
                 }
             }
         }
         
         let pdfScanner = CGPDFScannerCreate(contentStream, table, selfPtr)
+        defer { CGPDFScannerRelease(pdfScanner) }
         CGPDFScannerScan(pdfScanner)
         
         return imageRects
