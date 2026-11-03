@@ -374,6 +374,9 @@ struct ContentView: View {
                 self.fileURL = url
                 self.loadPDF()
             } else {
+                if let win = currentWindow {
+                    SessionManager.shared.pendingHostWindow = win
+                }
                 openWindow(value: url)
             }
         }
@@ -517,10 +520,12 @@ struct ContentView: View {
             WindowAccessor(shouldClose: shouldCloseWindow) { window in
                 window.isRestorable = false
                 window.tabbingMode = .preferred
+                window.tabbingIdentifier = "SindriPDFTabGroup"
                 window.toolbarStyle = .unified
                 guard self.currentWindow != window else { return }
                 self.currentWindow = window
                 self.updateRegistry()
+                SessionManager.shared.updateCurrentSession(window)
                 OpenQueue.shared.markReady()
                 
                 // Suppress toolbar right-click context menu
@@ -535,11 +540,7 @@ struct ContentView: View {
                 }
                 
                 // Match frame to existing host window as early as possible to prevent resize flash
-                let otherWindows = NSApp.windows.filter {
-                    $0 != window && $0.isVisible && $0.canBecomeKey &&
-                    !$0.className.contains("Panel")
-                }
-                if let hostWindow = otherWindows.first, window.frame != hostWindow.frame {
+                if let hostWindow = SessionManager.shared.pendingHostWindow ?? SessionManager.shared.activeSessionWindow, hostWindow != window {
                     window.setFrame(hostWindow.frame, display: false, animate: false)
                 }
                 
@@ -589,29 +590,14 @@ struct ContentView: View {
     
     private var isHandlingWindow: Bool {
         guard let window = currentWindow else { return false }
+        guard let activeSession = SessionManager.shared.activeSessionWindow else { return false }
         
-        // If there is a key window, only that window (or its selected tab) should handle it
-        if let keyWin = NSApp.keyWindow {
-            if let tabGroup = keyWin.tabGroup {
-                return tabGroup.selectedWindow == window
+        if let tabGroup = activeSession.tabGroup {
+            if let selected = tabGroup.selectedWindow {
+                return selected == window
             }
-            return keyWin == window
         }
-        
-        // If no key window (app in background), find the frontmost document window
-        let candidateWindows = NSApp.windows.filter {
-            !$0.className.contains("Panel") &&
-            !$0.className.contains("NSColorPanel") &&
-            !$0.className.contains("NSFontPanel")
-        }
-        if let firstWin = candidateWindows.first {
-            if let tabGroup = firstWin.tabGroup {
-                return tabGroup.selectedWindow == window
-            }
-            return firstWin == window
-        }
-        
-        return false
+        return activeSession == window
     }
     
     // Close the current tab, or return to the landing page if it is the last tab
@@ -982,12 +968,6 @@ struct ContentView: View {
                 }
                 return
             }
-        } else {
-            if OpenDocumentsRegistry.shared.window(showing: resolvedURL) != nil {
-                OpenQueue.shared.processNext()
-                self.shouldCloseWindow = true
-                return
-            }
         }
         
         if let doc = PDFDocument(url: resolvedURL) {
@@ -1031,8 +1011,14 @@ struct ContentView: View {
         }
     }
     
-    // Open new PDF as tab (Cmd+O) — loads in current window if empty, else new tab
+    // Open new PDF as tab — loads in current window if empty, else new tab
     private func openNewPDF() {
+        let current = self.currentWindow ?? SessionManager.shared.activeSessionWindow
+        if let current = current {
+            SessionManager.shared.updateCurrentSession(current)
+            SessionManager.shared.pendingHostWindow = current
+        }
+        
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
@@ -1041,31 +1027,22 @@ struct ContentView: View {
         if panel.runModal() == .OK {
             let resolvedURLs = panel.urls.compactMap { self.validateAndResolvePDF(url: $0) }
             if !resolvedURLs.isEmpty {
+                if let current = current {
+                    SessionManager.shared.updateCurrentSession(current)
+                    SessionManager.shared.pendingHostWindow = current
+                }
                 OpenQueue.shared.add(urls: resolvedURLs)
+            } else {
+                SessionManager.shared.clearPendingHostWindow()
             }
+        } else {
+            SessionManager.shared.clearPendingHostWindow()
         }
     }
     
-    // Open new PDF in a completely separate window (Cmd+N)
+    // Open new PDF in current session (single session default)
     private func openNewPDFInNewWindow() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.pdf]
-        
-        if panel.runModal() == .OK {
-            let validURLs = panel.urls.compactMap { url -> URL? in
-                if let resolved = self.validateAndResolvePDF(url: url), !focusWindow(showing: resolved) {
-                    return resolved
-                }
-                return nil
-            }
-            if let firstURL = validURLs.first {
-                // Register the first URL to be opened in a separate window
-                OpenDocumentsRegistry.shared.registerSeparateWindow(for: firstURL)
-                OpenQueue.shared.add(urls: validURLs)
-            }
-        }
+        openNewPDF()
     }
     
     // Restore session of PDF documents

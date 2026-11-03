@@ -80,32 +80,26 @@ struct SearchCommands: Commands {
     }
 }
 
-// Commands for File menu: Cmd+O (open as tab) and Cmd+N (open in new window)
+// Commands for File menu: Cmd+O (open) and Cmd+N (new tab)
 struct FileOpenCommands: Commands {
     @FocusedValue(\.openTabAction) var openTabAction
-    @FocusedValue(\.openWindowAction) var openWindowAction
     @AppStorage("shortcut_openTab") private var openTabShortcutData: Data?
-    @AppStorage("shortcut_openWindow") private var openWindowShortcutData: Data?
     
     var openTabShortcut: ShortcutConfig {
         ShortcutManager.getShortcut(forKey: "shortcut_openTab", defaultShortcut: ShortcutManager.defaultOpenTab)
     }
     
-    var openWindowShortcut: ShortcutConfig {
-        ShortcutManager.getShortcut(forKey: "shortcut_openWindow", defaultShortcut: ShortcutManager.defaultOpenWindow)
-    }
-    
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("Open in New Tab...") {
+            Button("Open...") {
                 openTabAction?()
             }
             .keyboardShortcut(openTabShortcut.swiftUIKeyEquivalent, modifiers: openTabShortcut.swiftUIModifiers)
             
-            Button("Open in New Window...") {
-                openWindowAction?()
+            Button("New Tab...") {
+                openTabAction?()
             }
-            .keyboardShortcut(openWindowShortcut.swiftUIKeyEquivalent, modifiers: openWindowShortcut.swiftUIModifiers)
+            .keyboardShortcut("n", modifiers: .command)
         }
     }
 }
@@ -169,6 +163,13 @@ struct ViewCommands: Commands {
             }
             .keyboardShortcut(presentationShortcut.swiftUIKeyEquivalent, modifiers: presentationShortcut.swiftUIModifiers)
             .disabled(presentationAction == nil)
+            
+            Divider()
+            
+            Button("Merge All Windows") {
+                SessionManager.shared.mergeAllWindows()
+            }
+            .keyboardShortcut("m", modifiers: [.control, .command])
         }
     }
 }
@@ -217,7 +218,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func application(_ application: NSApplication, open urls: [URL]) {
         DLog("AppDelegate.application(open urls): count=\(urls.count) urls=\(urls.map { $0.lastPathComponent })")
-        OpenQueue.shared.add(urls: urls)
+        NSApp.activate(ignoringOtherApps: true)
+        if let activeWin = SessionManager.shared.activeSessionWindow {
+            activeWin.makeKeyAndOrderFront(nil)
+            SessionManager.shared.pendingHostWindow = activeWin
+        }
+        let urlsToOpen = urls.filter { url in
+            if focusWindow(showing: url) {
+                return false
+            }
+            return true
+        }
+        if !urlsToOpen.isEmpty {
+            OpenQueue.shared.add(urls: urlsToOpen)
+        }
     }
     
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
@@ -307,14 +321,6 @@ struct SindriPDFApp: App {
             ContentView(fileURL: url)
                 .frame(minWidth: 800, minHeight: 600)
         }
-        .commands {
-            SidebarCommands()
-            FileOpenCommands()
-            SearchCommands()
-            CloseCommands()
-            FileJumpCommands()
-            ViewCommands()
-        }
         
         Settings {
             SettingsView()
@@ -325,13 +331,20 @@ struct SindriPDFApp: App {
 // Map the native macOS tab bar plus (+) button action to a custom file picker
 extension NSWindow {
     @objc open override func newWindowForTab(_ sender: Any?) {
+        SessionManager.shared.updateCurrentSession(self)
+        SessionManager.shared.pendingHostWindow = self
+        
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [UTType.pdf]
         
         if panel.runModal() == .OK, !panel.urls.isEmpty {
+            SessionManager.shared.updateCurrentSession(self)
+            SessionManager.shared.pendingHostWindow = self
             OpenQueue.shared.add(urls: panel.urls)
+        } else {
+            SessionManager.shared.clearPendingHostWindow()
         }
     }
 }
@@ -526,13 +539,22 @@ class AppleEventsHandler: NSObject {
         guard let filesList = event.paramDescriptor(forKeyword: keyDirectObject) else { return }
         
         var urls: [URL] = []
-        for i in 1...filesList.numberOfItems {
-            if let descriptor = filesList.atIndex(i) {
-                if let url = descriptor.fileURLValue {
-                    urls.append(url)
-                } else if let str = descriptor.stringValue, !str.isEmpty {
-                    urls.append(URL(fileURLWithPath: str))
+        if filesList.numberOfItems > 0 {
+            for i in 1...filesList.numberOfItems {
+                if let descriptor = filesList.atIndex(i) {
+                    if let url = descriptor.fileURLValue {
+                        urls.append(url)
+                    } else if let str = descriptor.stringValue, !str.isEmpty {
+                        urls.append(URL(fileURLWithPath: str))
+                    }
                 }
+            }
+        } else {
+            // Single file directly in keyDirectObject (numberOfItems is 0)
+            if let url = filesList.fileURLValue {
+                urls.append(url)
+            } else if let str = filesList.stringValue, !str.isEmpty {
+                urls.append(URL(fileURLWithPath: str))
             }
         }
         
@@ -540,7 +562,8 @@ class AppleEventsHandler: NSObject {
         DLog("DEBUG handleOpenDocsEvent: received \(urls.count) URLs: \(urls.map { $0.lastPathComponent })")
         
         DispatchQueue.main.async {
-            // Activate the running app so it comes to the foreground
+            // Unhide and activate the running app so it comes to the foreground
+            NSApp.unhide(nil)
             NSApp.activate(ignoringOtherApps: true)
             
             // Filter out URLs that are already open and just focus them
@@ -553,15 +576,13 @@ class AppleEventsHandler: NSObject {
             
             guard !urlsToOpen.isEmpty else { return }
             
-            // Bring frontmost window to key if available
-            let visibleCandidateWindows = NSApp.windows.filter {
-                $0.isVisible && $0.canBecomeKey && !$0.className.contains("Panel")
-            }
-            if let frontWin = visibleCandidateWindows.first {
-                frontWin.makeKeyAndOrderFront(nil)
+            // Bring active session window to key if available
+            if let activeWin = SessionManager.shared.activeSessionWindow {
+                activeWin.makeKeyAndOrderFront(nil)
+                SessionManager.shared.pendingHostWindow = activeWin
             }
             
-            if visibleCandidateWindows.isEmpty {
+            if SessionManager.shared.eligibleDocumentWindows.isEmpty {
                 self.appendPendingURLs(urlsToOpen)
                 _ = NSApp.delegate?.applicationShouldHandleReopen?(NSApp, hasVisibleWindows: false)
             } else {

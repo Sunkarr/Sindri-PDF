@@ -168,38 +168,19 @@ class CustomPDFView: PDFView, PDFDocumentDelegate {
                 window.delegate = proxy
                 closeProxy = proxy
             }
-            // Force window tabbing mode to preferred so new documents open as tabs
+            // Force window tabbing mode to preferred and set shared identifier
             window.tabbingMode = .preferred
+            window.tabbingIdentifier = "SindriPDFTabGroup"
             
-            // Merge this window into any existing window's tab group to ensure tabs are used
+            // Merge this window into the target session's tab group to ensure tabs are used
             // Only run once per window to prevent resize flashes from repeated viewDidMoveToWindow calls
             if !TabBarButtonTarget.isSorting && !hasMergedIntoTabGroup {
-                if let url = self.document?.documentURL, OpenDocumentsRegistry.shared.consumeSeparateWindow(for: url) {
-                    hasMergedIntoTabGroup = true
-                    DispatchQueue.main.async {
-                        if let tabGroup = window.tabGroup, !tabGroup.isTabBarVisible {
-                            window.toggleTabBar(nil)
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                            OpenQueue.shared.processNext()
-                        }
-                    }
-                    return
-                }
-                
-                let otherWindows = NSApplication.shared.windows.filter {
-                    $0 != window &&
-                    $0.isVisible &&
-                    !$0.className.contains("NSColorPanel") &&
-                    !$0.className.contains("NSFontPanel") &&
-                    $0.canBecomeKey
-                }
-                DLog("viewDidMoveToWindow: window='\(window.title)' otherWindows=\(otherWindows.map { $0.title })")
-                let hostWindow = otherWindows.first(where: { $0.isKeyWindow || $0.isMainWindow }) ?? otherWindows.first
-                if let hostWindow = hostWindow {
+                let hostWindow = SessionManager.shared.consumePendingHostWindow() ?? SessionManager.shared.activeSessionWindow
+                if let hostWindow = hostWindow, hostWindow != window {
                     if let tabGroup = hostWindow.tabGroup, tabGroup.windows.contains(window) {
                         DLog("viewDidMoveToWindow: window '\(window.title)' is already part of hostWindow's tabGroup")
                         hasMergedIntoTabGroup = true
+                        SessionManager.shared.updateCurrentSession(window)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                             OpenQueue.shared.processNext()
                         }
@@ -222,9 +203,9 @@ class CustomPDFView: PDFView, PDFDocumentDelegate {
                         NSAnimationContext.beginGrouping()
                         NSAnimationContext.current.duration = 0
                         
-                        let lastTab = hostWindow.tabGroup?.windows.last ?? hostWindow
-                        lastTab.makeKey()
-                        lastTab.addTabbedWindow(window, ordered: .above)
+                        let targetTab = hostWindow.tabGroup?.windows.last ?? hostWindow
+                        targetTab.makeKey()
+                        targetTab.addTabbedWindow(window, ordered: .above)
                         // Select this new tab so it becomes active
                         window.makeKey()
                         
@@ -232,13 +213,16 @@ class CustomPDFView: PDFView, PDFDocumentDelegate {
                         window.alphaValue = 1.0
                         NSAnimationContext.endGrouping()
                         
+                        SessionManager.shared.updateCurrentSession(window)
+                        
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                             OpenQueue.shared.processNext()
                         }
                     }
                 } else {
-                    // No other windows to merge with; this is the first/anchor window.
+                    // No other windows to merge with; this is the first/anchor window or split session.
                     // Notify OpenQueue to proceed with subsequent files.
+                    SessionManager.shared.updateCurrentSession(window)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                         OpenQueue.shared.processNext()
                     }
