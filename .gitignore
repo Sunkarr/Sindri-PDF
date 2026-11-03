@@ -1,0 +1,12 @@
+.DS_Store
+*.bak
+*~
+*.app/
+*.dmg
+*.iconset/
+dmg_input/
+.build/
+.backup/
+Sources/
+*.swift
+.Rhistory
