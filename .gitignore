@@ -1,10 +1,18 @@
 .DS_Store
+.DS_Store*
+*.DS_Store
 .build/
+.backup/
 Sindri PDF.app/
+SimplePDF.app/
 debug.txt
 debug_log.txt
 test_scrollview
 view_hierarchy.txt
 .Rhistory
 *.dmg
+*.iconset/
+SindriPDF.icns
+*.log
+generate_banner.swift
 

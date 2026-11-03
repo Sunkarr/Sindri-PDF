@@ -18,7 +18,11 @@ mkdir -p "$APP_DIR/Contents/Resources"
 
 # Step 3: Compile Binary
 echo "Compiling Swift files..."
-swiftc -O -target arm64-apple-macos14.0 Sources/*.swift -o "$APP_DIR/Contents/MacOS/Sindri PDF"
+SDK_PATH="/Library/Developer/CommandLineTools/SDKs/MacOSX14.4.sdk"
+if [ ! -d "$SDK_PATH" ]; then
+    SDK_PATH="$(xcrun --show-sdk-path)"
+fi
+swiftc -O -sdk "$SDK_PATH" -target arm64-apple-macos14.0 Sources/*.swift -o "$APP_DIR/Contents/MacOS/Sindri PDF"
 
 # Step 4: Copy Assets
 cp SindriPDF.icns "$APP_DIR/Contents/Resources/AppIcon.icns"

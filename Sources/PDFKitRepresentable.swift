@@ -8,6 +8,10 @@ class WindowCloseProxy: NSObject, NSWindowDelegate {
     var originalDelegate: NSWindowDelegate?
     
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if AppDelegate.isTerminating {
+            return true
+        }
+        
         let tabCount = sender.tabGroup?.windows.count ?? 1
         if tabCount <= 1 {
             // Only intercept to show the landing page if this window actually has an open document
@@ -190,7 +194,18 @@ class CustomPDFView: PDFView, PDFDocumentDelegate {
                     !$0.className.contains("NSFontPanel") &&
                     $0.canBecomeKey
                 }
-                if let hostWindow = otherWindows.first {
+                DLog("viewDidMoveToWindow: window='\(window.title)' otherWindows=\(otherWindows.map { $0.title })")
+                let hostWindow = otherWindows.first(where: { $0.isKeyWindow || $0.isMainWindow }) ?? otherWindows.first
+                if let hostWindow = hostWindow {
+                    if let tabGroup = hostWindow.tabGroup, tabGroup.windows.contains(window) {
+                        DLog("viewDidMoveToWindow: window '\(window.title)' is already part of hostWindow's tabGroup")
+                        hasMergedIntoTabGroup = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            OpenQueue.shared.processNext()
+                        }
+                        return
+                    }
+                    DLog("viewDidMoveToWindow: merging '\(window.title)' into hostWindow='\(hostWindow.title)'")
                     hasMergedIntoTabGroup = true
                     
                     // Hide the window visually before merging it to prevent a brief separate window flash
@@ -346,7 +361,15 @@ class CustomPDFView: PDFView, PDFDocumentDelegate {
         
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.writeObjects([croppedNSImage])
+        
+        if let tiffData = croppedNSImage.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiffData),
+           let pngData = bitmap.representation(using: .png, properties: [:]) {
+            pasteboard.setData(pngData, forType: .png)
+            pasteboard.setData(tiffData, forType: .tiff)
+        } else {
+            pasteboard.writeObjects([croppedNSImage])
+        }
     }
     
     private func cropRectFor(rect: CGRect, pageBounds: CGRect, rotation: Int) -> CGRect {

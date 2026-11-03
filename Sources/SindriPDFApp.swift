@@ -181,7 +181,8 @@ func saveOpenDocuments() {
 
 // Focus window displaying a specific PDF file and return true, or return false if not found
 func focusWindow(showing url: URL, excluding currentWindow: NSWindow? = nil) -> Bool {
-    if let window = OpenDocumentsRegistry.shared.window(showing: url), window != currentWindow {
+    let normalized = url.resolvingSymlinksInPath().standardized
+    if let window = OpenDocumentsRegistry.shared.window(showing: normalized), window != currentWindow {
         window.makeKeyAndOrderFront(nil)
         return true
     }
@@ -200,6 +201,44 @@ func restoreOpenDocuments() {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    static var isTerminating = false
+    
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        return false
+    }
+    
+    func application(_ app: NSApplication, shouldSaveApplicationState coder: NSCoder) -> Bool {
+        return false
+    }
+    
+    func application(_ app: NSApplication, shouldRestoreApplicationState coder: NSCoder) -> Bool {
+        return false
+    }
+    
+    func application(_ application: NSApplication, open urls: [URL]) {
+        DLog("AppDelegate.application(open urls): count=\(urls.count) urls=\(urls.map { $0.lastPathComponent })")
+        OpenQueue.shared.add(urls: urls)
+    }
+    
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        return false
+    }
+    
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        AppDelegate.isTerminating = true
+        return .terminateNow
+    }
+    
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if flag {
+            return false
+        }
+        let pending = AppleEventsHandler.shared.consumePendingURLs()
+        if !pending.isEmpty {
+            OpenQueue.shared.add(urls: pending)
+        }
+        return true
+    }
 }
 
 @main
@@ -214,32 +253,25 @@ struct SindriPDFApp: App {
         
         if !runningApps.isEmpty {
             // Activate the existing running instance
-            runningApps.first?.activate(options: [])
+            runningApps.first?.activate()
             
             // Forward command line PDF arguments to the running instance
-            if CommandLine.arguments.count > 1 {
-                let possiblePath = CommandLine.arguments[1]
-                if !possiblePath.hasPrefix("-") {
-                    let url = URL(fileURLWithPath: possiblePath)
-                    NSWorkspace.shared.open([url], withApplicationAt: runningApps.first!.bundleURL!, configuration: NSWorkspace.OpenConfiguration()) { _, _ in
-                        exit(0)
-                    }
-                } else {
-                    exit(0)
-                }
-            } else {
-                exit(0)
+            let fileArgs = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
+            let urls = fileArgs.map { URL(fileURLWithPath: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
+            if !urls.isEmpty {
+                NSWorkspace.shared.open(urls, withApplicationAt: runningApps.first!.bundleURL!, configuration: NSWorkspace.OpenConfiguration())
             }
+            exit(0)
         }
         
         // Parse initial URL from argument if available
-        if CommandLine.arguments.count > 1 {
-            let possiblePath = CommandLine.arguments[1]
-            if !possiblePath.hasPrefix("-") {
-                let url = URL(fileURLWithPath: possiblePath)
-                if FileManager.default.fileExists(atPath: url.path) {
-                    self._initialURL = State(initialValue: url)
-                }
+        let fileArgs = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
+        let urls = fileArgs.map { URL(fileURLWithPath: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
+        if let firstURL = urls.first {
+            self._initialURL = State(initialValue: firstURL)
+            let remainingURLs = Array(urls.dropFirst())
+            if !remainingURLs.isEmpty {
+                AppleEventsHandler.shared.appendPendingURLs(remainingURLs)
             }
         }
         
@@ -257,9 +289,17 @@ struct SindriPDFApp: App {
     
     var body: some Scene {
         // Main window (shows landing page by default, or initial URL)
-        WindowGroup {
+        Window("Sindri PDF", id: "main") {
             ContentView(fileURL: initialURL)
                 .frame(minWidth: 800, minHeight: 600)
+        }
+        .commands {
+            SidebarCommands()
+            FileOpenCommands()
+            SearchCommands()
+            CloseCommands()
+            FileJumpCommands()
+            ViewCommands()
         }
         
         // Window group for opening subsequent files as tabs
@@ -306,28 +346,34 @@ class OpenDocumentsRegistry {
     func registerSeparateWindow(for url: URL) {
         lock.lock()
         defer { lock.unlock() }
-        let path = url.standardized.path.lowercased()
+        let path = url.resolvingSymlinksInPath().standardized.path.lowercased()
         separateWindowURLs.insert(path)
     }
     
     func consumeSeparateWindow(for url: URL) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        let path = url.standardized.path.lowercased()
+        let path = url.resolvingSymlinksInPath().standardized.path.lowercased()
         return separateWindowURLs.remove(path) != nil
     }
     
     func register(window: NSWindow, for url: URL) {
         lock.lock()
         defer { lock.unlock() }
-        let path = url.standardized.path
+        let path = url.resolvingSymlinksInPath().standardized.path
         openDocuments[path] = window
+    }
+    
+    func unregister(window: NSWindow) {
+        lock.lock()
+        defer { lock.unlock() }
+        openDocuments = openDocuments.filter { $0.value != window }
     }
     
     func unregister(url: URL) {
         lock.lock()
         defer { lock.unlock() }
-        let path = url.standardized.path
+        let path = url.resolvingSymlinksInPath().standardized.path
         openDocuments.removeValue(forKey: path)
         
         // Fallback case-insensitive unregister to be safe
@@ -340,7 +386,7 @@ class OpenDocumentsRegistry {
     func window(showing url: URL) -> NSWindow? {
         lock.lock()
         defer { lock.unlock() }
-        let path = url.standardized.path
+        let path = url.resolvingSymlinksInPath().standardized.path
         if let window = openDocuments[path], window.isVisible {
             return window
         }
@@ -378,25 +424,51 @@ class OpenDocumentsRegistry {
 class OpenQueue {
     static let shared = OpenQueue()
     private var urls: [URL] = []
+    private var currentURL: URL? = nil
     private let lock = NSLock()
     private var isProcessing = false
+    private var isReady = false
     private var timeoutTimer: Timer? = nil
+    
+    func markReady() {
+        lock.lock()
+        let wasReady = isReady
+        isReady = true
+        let shouldStart = !isProcessing && !urls.isEmpty
+        if shouldStart {
+            isProcessing = true
+        }
+        DLog("OpenQueue.markReady: wasReady=\(wasReady), shouldStart=\(shouldStart), queuedCount=\(urls.count)")
+        lock.unlock()
+        
+        if !wasReady && shouldStart {
+            DispatchQueue.main.async { [weak self] in
+                self?.processNext()
+            }
+        }
+    }
     
     func add(urls: [URL]) {
         lock.lock()
-        // Filter out duplicates that are already in the queue
+        // Filter out duplicates that are already in the queue or currently being loaded
         let uniqueNew = urls.filter { newURL in
-            !self.urls.contains(where: { $0.standardized.path == newURL.standardized.path })
+            let path = newURL.resolvingSymlinksInPath().standardized.path
+            let isCurrent = currentURL?.resolvingSymlinksInPath().standardized.path == path
+            let isQueued = self.urls.contains(where: { $0.resolvingSymlinksInPath().standardized.path == path })
+            return !isCurrent && !isQueued
         }
         self.urls.append(contentsOf: uniqueNew)
-        let shouldStart = !isProcessing
+        DLog("OpenQueue.add: added=\(uniqueNew.map { $0.lastPathComponent }), totalQueued=\(self.urls.map { $0.lastPathComponent }), isReady=\(isReady), isProcessing=\(isProcessing)")
+        let shouldStart = isReady && !isProcessing
         if shouldStart {
             isProcessing = true
         }
         lock.unlock()
         
         if shouldStart {
-            processNext()
+            DispatchQueue.main.async { [weak self] in
+                self?.processNext()
+            }
         }
     }
     
@@ -406,17 +478,21 @@ class OpenQueue {
         timeoutTimer = nil
         
         guard !urls.isEmpty else {
+            DLog("OpenQueue.processNext: queue is empty, stopping.")
             isProcessing = false
+            currentURL = nil
             lock.unlock()
             return
         }
         let nextURL = urls.removeFirst()
+        currentURL = nextURL
+        DLog("OpenQueue.processNext: dispatching \(nextURL.lastPathComponent)")
         lock.unlock()
         
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
             // Start a 3.0s timeout to prevent getting stuck if a window fails to open
-            self.timeoutTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
-                print("OpenQueue: Timeout waiting for window to open, moving to next.")
+            self?.timeoutTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+                DLog("OpenQueue: Timeout waiting for window to open, moving to next.")
                 self?.processNext()
             }
             
@@ -451,15 +527,22 @@ class AppleEventsHandler: NSObject {
         
         var urls: [URL] = []
         for i in 1...filesList.numberOfItems {
-            if let descriptor = filesList.atIndex(i),
-               let url = descriptor.fileURLValue {
-                urls.append(url)
+            if let descriptor = filesList.atIndex(i) {
+                if let url = descriptor.fileURLValue {
+                    urls.append(url)
+                } else if let str = descriptor.stringValue, !str.isEmpty {
+                    urls.append(URL(fileURLWithPath: str))
+                }
             }
         }
         
         guard !urls.isEmpty else { return }
+        DLog("DEBUG handleOpenDocsEvent: received \(urls.count) URLs: \(urls.map { $0.lastPathComponent })")
         
         DispatchQueue.main.async {
+            // Activate the running app so it comes to the foreground
+            NSApp.activate(ignoringOtherApps: true)
+            
             // Filter out URLs that are already open and just focus them
             let urlsToOpen = urls.filter { url in
                 if focusWindow(showing: url) {
@@ -470,9 +553,17 @@ class AppleEventsHandler: NSObject {
             
             guard !urlsToOpen.isEmpty else { return }
             
-            let hasVisibleWindows = !NSApp.windows.filter({ $0.isVisible && $0.canBecomeKey }).isEmpty
-            if !hasVisibleWindows {
+            // Bring frontmost window to key if available
+            let visibleCandidateWindows = NSApp.windows.filter {
+                $0.isVisible && $0.canBecomeKey && !$0.className.contains("Panel")
+            }
+            if let frontWin = visibleCandidateWindows.first {
+                frontWin.makeKeyAndOrderFront(nil)
+            }
+            
+            if visibleCandidateWindows.isEmpty {
                 self.appendPendingURLs(urlsToOpen)
+                _ = NSApp.delegate?.applicationShouldHandleReopen?(NSApp, hasVisibleWindows: false)
             } else {
                 OpenQueue.shared.add(urls: urlsToOpen)
             }

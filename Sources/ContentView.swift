@@ -89,6 +89,11 @@ struct ContentView: View {
     // Sidebar visibility state
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     
+    init(fileURL: URL? = nil) {
+        self._fileURL = State(initialValue: fileURL)
+        self._columnVisibility = State(initialValue: fileURL != nil ? .all : .detailOnly)
+    }
+    
     // Search overlay state
     @State private var isSearchPresented = false
     
@@ -172,144 +177,121 @@ struct ContentView: View {
     @State private var sharedPDFView = CustomPDFView()
     
     var body: some View {
-        Group {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             if let doc = pdfDocument {
-                NavigationSplitView(columnVisibility: $columnVisibility) {
-                    SidebarView(
-                        document: doc,
-                        pdfView: sharedPDFView,
-                        currentPage: $currentPage,
-                        sidebarWidth: activeSidebarWidth
-                    )
-                    .background(
-                        GeometryReader { geometry in
-                            Color.clear
-                                .onChange(of: geometry.size.width) { _, newWidth in
-                                    if newWidth >= 150 {
-                                        if abs(activeSidebarWidth - newWidth) > 0.5 {
-                                            activeSidebarWidth = newWidth
-                                        }
-                                        sidebarSaveTask?.cancel()
-                                        sidebarSaveTask = Task {
-                                            try? await Task.sleep(nanoseconds: 200_000_000)
-                                            if !Task.isCancelled {
-                                                sidebarWidth = Double(newWidth)
-                                            }
+                SidebarView(
+                    document: doc,
+                    pdfView: sharedPDFView,
+                    currentPage: $currentPage,
+                    sidebarWidth: activeSidebarWidth
+                )
+                .background(
+                    GeometryReader { geometry in
+                        Color.clear
+                            .onChange(of: geometry.size.width) { _, newWidth in
+                                if newWidth >= 150 {
+                                    if abs(activeSidebarWidth - newWidth) > 0.5 {
+                                        activeSidebarWidth = newWidth
+                                    }
+                                    sidebarSaveTask?.cancel()
+                                    let targetWidth = Double(newWidth)
+                                    sidebarSaveTask = Task { @MainActor in
+                                        try? await Task.sleep(nanoseconds: 200_000_000)
+                                        if !Task.isCancelled {
+                                            sidebarWidth = targetWidth
                                         }
                                     }
                                 }
-                        }
-                    )
-                    .navigationSplitViewColumnWidth(min: 150, ideal: activeSidebarWidth, max: 400)
-                } detail: {
-                    ZStack {
-                        VStack(spacing: 0) {
-                            // PDF Kit View
-                            PDFViewRepresentable(
+                            }
+                    }
+                )
+                .navigationSplitViewColumnWidth(min: 150, ideal: activeSidebarWidth, max: 400)
+            } else {
+                Color.clear
+                    .navigationSplitViewColumnWidth(min: 0, ideal: 0, max: 0)
+            }
+        } detail: {
+            if let doc = pdfDocument {
+                ZStack {
+                    VStack(spacing: 0) {
+                        // PDF Kit View
+                        PDFViewRepresentable(
+                            document: doc,
+                            pdfView: sharedPDFView,
+                            currentPage: $currentPage,
+                            totalPages: $totalPages,
+                            scaleFactor: $scaleFactor,
+                            autoScales: $autoScales,
+                            displayMode: $displayMode,
+                            isPresentationMode: $isPresentationMode,
+                            currentPageRect: $currentPageRect
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color(NSColor.underPageBackgroundColor))
+                        
+                        // Bottom Status Bar
+                        if !isPresentationMode {
+                            StatusBarView(
                                 document: doc,
                                 pdfView: sharedPDFView,
                                 currentPage: $currentPage,
                                 totalPages: $totalPages,
                                 scaleFactor: $scaleFactor,
-                                autoScales: $autoScales,
-                                displayMode: $displayMode,
-                                isPresentationMode: $isPresentationMode,
-                                currentPageRect: $currentPageRect
+                                autoScales: $autoScales
                             )
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(Color(NSColor.underPageBackgroundColor))
-                            
-                            // Bottom Status Bar
-                            if !isPresentationMode {
-                                StatusBarView(
-                                    document: doc,
-                                    pdfView: sharedPDFView,
-                                    currentPage: $currentPage,
-                                    totalPages: $totalPages,
-                                    scaleFactor: $scaleFactor,
-                                    autoScales: $autoScales
-                                )
-                            }
                         }
-                        
-                        // Search HUD overlay
-                        if isSearchPresented {
-                            VStack {
-                                HStack {
-                                    Spacer()
-                                    SearchOverlayView(
-                                        pdfView: sharedPDFView,
-                                        isPresented: $isSearchPresented
-                                    )
-                                    .padding()
-                                }
+                    }
+                    
+                    // Search HUD overlay
+                    if isSearchPresented {
+                        VStack {
+                            HStack {
                                 Spacer()
-                            }
-                        }
-                        
-                        // Jump to Page HUD overlay
-                        if isJumpToPagePresented {
-                            VStack {
-                                Spacer()
-                                PageJumpOverlayView(
+                                SearchOverlayView(
                                     pdfView: sharedPDFView,
-                                    isPresented: $isJumpToPagePresented,
-                                    currentPage: $currentPage,
-                                    totalPages: totalPages
+                                    isPresented: $isSearchPresented
                                 )
                                 .padding()
-                                Spacer()
                             }
-                        }
-                        
-                        // Presentation Progress Bar
-                        if isPresentationMode && showProgressBar && currentPageRect != .zero {
-                            GeometryReader { geo in
-                                let progress = totalPages > 0 ? CGFloat(currentPage) / CGFloat(totalPages) : 0
-                                let width = currentPageRect.size.width * progress
-                                let xOffset = currentPageRect.origin.x
-                                let yOffset = progressBarPosition == "top" ?
-                                    (geo.size.height - currentPageRect.maxY) :
-                                    (geo.size.height - currentPageRect.minY - CGFloat(progressBarThickness))
-                                
-                                Rectangle()
-                                    .fill(Color(hex: progressBarHexColor))
-                                    .frame(width: width, height: CGFloat(progressBarThickness))
-                                    .offset(x: xOffset, y: yOffset)
-                            }
-                            .ignoresSafeArea()
+                            Spacer()
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .ignoresSafeArea(isPresentationMode ? .all : [])
+                    
+                    // Jump to Page HUD overlay
+                    if isJumpToPagePresented {
+                        VStack {
+                            Spacer()
+                            PageJumpOverlayView(
+                                pdfView: sharedPDFView,
+                                isPresented: $isJumpToPagePresented,
+                                currentPage: $currentPage,
+                                totalPages: totalPages
+                            )
+                            .padding()
+                            Spacer()
+                        }
+                    }
+                    
+                    // Presentation Progress Bar
+                    if isPresentationMode && showProgressBar && currentPageRect != .zero {
+                        GeometryReader { geo in
+                            let progress = totalPages > 0 ? CGFloat(currentPage) / CGFloat(totalPages) : 0
+                            let width = currentPageRect.size.width * progress
+                            let xOffset = currentPageRect.origin.x
+                            let yOffset = progressBarPosition == "top" ?
+                                (geo.size.height - currentPageRect.maxY) :
+                                (geo.size.height - currentPageRect.minY - CGFloat(progressBarThickness))
+                            
+                            Rectangle()
+                                .fill(Color(hex: progressBarHexColor))
+                                .frame(width: width, height: CGFloat(progressBarThickness))
+                                .offset(x: xOffset, y: yOffset)
+                        }
+                        .ignoresSafeArea()
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(isPresentationMode ? .all : [])
-                .toolbar(isPresentationMode ? .hidden : .visible, for: .windowToolbar)
-                .toolbar {
-                    ToolbarItemGroup(placement: .primaryAction) {
-                        // View Mode Picker (Single Page, Two Pages, Presentation Mode)
-                        Picker("View Mode", selection: viewModeSelection) {
-                            Label("Single Page", systemImage: "doc").tag(ViewModeSelection.single)
-                            Label("Two Pages", systemImage: "book").tag(ViewModeSelection.twoUp)
-                            Label("Presentation Mode", systemImage: "play.rectangle.on.rectangle").tag(ViewModeSelection.presentation)
-                        }
-                        .pickerStyle(.segmented)
-                        .help("Switch between Portrait, Spread, or Presentation mode")
-                        
-                        // Toggle Search
-                        Button(action: { isSearchPresented.toggle() }) {
-                            Image(systemName: "magnifyingglass")
-                        }
-                        .help("Find Text (Cmd + F)")
-                        
-                        // Show metadata details
-                        Button(action: { isInspectorPresented.toggle() }) {
-                            Image(systemName: "info.circle")
-                        }
-                        .keyboardShortcut("i", modifiers: .command)
-                        .help("Document Metadata Inspector (Cmd + I)")
-                    }
-                }
                 .sheet(isPresented: $isInspectorPresented) {
                     InspectorView(
                         document: doc,
@@ -319,6 +301,35 @@ struct ContentView: View {
                 }
             } else {
                 landingPageView
+            }
+        }
+        .ignoresSafeArea(isPresentationMode ? .all : [])
+        .toolbar(isPresentationMode ? .hidden : .visible, for: .windowToolbar)
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                if pdfDocument != nil {
+                    // View Mode Picker (Single Page, Two Pages, Presentation Mode)
+                    Picker("View Mode", selection: viewModeSelection) {
+                        Label("Single Page", systemImage: "doc").tag(ViewModeSelection.single)
+                        Label("Two Pages", systemImage: "book").tag(ViewModeSelection.twoUp)
+                        Label("Presentation Mode", systemImage: "play.rectangle.on.rectangle").tag(ViewModeSelection.presentation)
+                    }
+                    .pickerStyle(.segmented)
+                    .help("Switch between Portrait, Spread, or Presentation mode")
+                    
+                    // Toggle Search
+                    Button(action: { isSearchPresented.toggle() }) {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .help("Find Text (Cmd + F)")
+                    
+                    // Show metadata details
+                    Button(action: { isInspectorPresented.toggle() }) {
+                        Image(systemName: "info.circle")
+                    }
+                    .keyboardShortcut("i", modifiers: .command)
+                    .help("Document Metadata Inspector (Cmd + I)")
+                }
             }
         }
         .navigationTitle(fileURL?.lastPathComponent ?? "Sindri PDF")
@@ -348,28 +359,11 @@ struct ContentView: View {
         .onChange(of: fileURL) { _, _ in
             loadPDF()
         }
-        .onOpenURL { url in
-            if focusWindow(showing: url) {
-                if let window = currentWindow {
-                    window.close()
-                } else {
-                    self.shouldCloseWindow = true
-                }
-                return
-            }
-            if fileURL == nil {
-                fileURL = url
-                loadPDF()
-            } else {
-                openWindow(value: url)
-            }
-        }
         // Handle single PDF opening requests from the OpenQueue
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("OpenSinglePDF"))) { notification in
-            let isPrimaryWindow = currentWindow?.isKeyWindow == true || (NSApp.keyWindow == nil && NSApp.windows.filter({ $0.isVisible && $0.canBecomeKey }).first == currentWindow)
-            guard isPrimaryWindow else { return }
-            
             guard let url = notification.object as? URL else { return }
+            DLog("OpenSinglePDF: url=\(url.lastPathComponent), isHandlingWindow=\(isHandlingWindow), currentWindow='\(currentWindow?.title ?? "nil")', fileURL=\(fileURL?.lastPathComponent ?? "nil")")
+            guard isHandlingWindow else { return }
             
             if focusWindow(showing: url) {
                 OpenQueue.shared.processNext()
@@ -379,7 +373,6 @@ struct ContentView: View {
             if fileURL == nil {
                 self.fileURL = url
                 self.loadPDF()
-                OpenQueue.shared.processNext()
             } else {
                 openWindow(value: url)
             }
@@ -388,13 +381,19 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ReturnToLandingPage"))) { notification in
             guard let closingWindow = notification.object as? NSWindow,
                   closingWindow == currentWindow else { return }
+            OpenDocumentsRegistry.shared.unregister(window: closingWindow)
+            closingWindow.representedURL = nil
+            closingWindow.title = "Sindri PDF"
+            self.columnVisibility = .detailOnly
             self.pdfDocument = nil
             self.fileURL = nil
+            self.registeredURL = nil
             self.currentPage = 1
             self.totalPages = 0
             self.scaleFactor = 1.0
             self.autoScales = true
             self.isSearchPresented = false
+            self.updateRegistry()
             saveOpenDocuments()
         }
         // Handle Sort Tabs request from the AppKit button next to plus
@@ -516,15 +515,19 @@ struct ContentView: View {
         )
         .background(
             WindowAccessor(shouldClose: shouldCloseWindow) { window in
+                window.isRestorable = false
+                window.tabbingMode = .preferred
+                window.toolbarStyle = .unified
                 guard self.currentWindow != window else { return }
                 self.currentWindow = window
                 self.updateRegistry()
+                OpenQueue.shared.markReady()
                 
                 // Suppress toolbar right-click context menu
                 if let toolbar = window.toolbar {
                     toolbar.allowsUserCustomization = false
-                    if #available(macOS 15.0, *) {
-                        toolbar.allowsDisplayModeCustomization = false
+                    if toolbar.responds(to: NSSelectorFromString("setAllowsDisplayModeCustomization:")) {
+                        toolbar.perform(NSSelectorFromString("setAllowsDisplayModeCustomization:"), with: false as NSNumber)
                     }
                 }
                 if let superview = window.contentView?.superview {
@@ -584,12 +587,42 @@ struct ContentView: View {
         }
     }
     
+    private var isHandlingWindow: Bool {
+        guard let window = currentWindow else { return false }
+        
+        // If there is a key window, only that window (or its selected tab) should handle it
+        if let keyWin = NSApp.keyWindow {
+            if let tabGroup = keyWin.tabGroup {
+                return tabGroup.selectedWindow == window
+            }
+            return keyWin == window
+        }
+        
+        // If no key window (app in background), find the frontmost document window
+        let candidateWindows = NSApp.windows.filter {
+            !$0.className.contains("Panel") &&
+            !$0.className.contains("NSColorPanel") &&
+            !$0.className.contains("NSFontPanel")
+        }
+        if let firstWin = candidateWindows.first {
+            if let tabGroup = firstWin.tabGroup {
+                return tabGroup.selectedWindow == window
+            }
+            return firstWin == window
+        }
+        
+        return false
+    }
+    
     // Close the current tab, or return to the landing page if it is the last tab
     private func closeCurrentDocument() {
         let currentWindow = self.currentWindow ?? NSApp.keyWindow
         
         guard pdfDocument != nil else {
             // Already on landing page: close the window
+            if let window = currentWindow {
+                OpenDocumentsRegistry.shared.unregister(window: window)
+            }
             currentWindow?.close()
             return
         }
@@ -599,16 +632,27 @@ struct ContentView: View {
         
         if tabbedWindowCount > 1 {
             // Multiple tabs: close this tab's window entirely
+            if let window = currentWindow {
+                OpenDocumentsRegistry.shared.unregister(window: window)
+            }
             currentWindow?.close()
         } else {
             // Last tab (or only window): return to the landing page
+            if let window = currentWindow {
+                OpenDocumentsRegistry.shared.unregister(window: window)
+                window.representedURL = nil
+                window.title = "Sindri PDF"
+            }
+            self.columnVisibility = .detailOnly
             self.pdfDocument = nil
             self.fileURL = nil
+            self.registeredURL = nil
             self.currentPage = 1
             self.totalPages = 0
             self.scaleFactor = 1.0
             self.autoScales = true
             self.isSearchPresented = false
+            self.updateRegistry()
             saveOpenDocuments()
         }
     }
@@ -729,10 +773,8 @@ struct ContentView: View {
             if toolbar.allowsUserCustomization {
                 toolbar.allowsUserCustomization = false
             }
-            if #available(macOS 15.0, *) {
-                if toolbar.allowsDisplayModeCustomization {
-                    toolbar.allowsDisplayModeCustomization = false
-                }
+            if toolbar.responds(to: NSSelectorFromString("setAllowsDisplayModeCustomization:")) {
+                toolbar.perform(NSSelectorFromString("setAllowsDisplayModeCustomization:"), with: false as NSNumber)
             }
         }
         if let superview = window.contentView?.superview, superview.menu != nil {
@@ -870,30 +912,30 @@ struct ContentView: View {
         .onDrop(of: [UTType.fileURL], isTargeted: $isDraggingOver) { providers in
             guard !providers.isEmpty else { return false }
             
+            let group = DispatchGroup()
+            let lock = NSLock()
+            var resolvedURLs: [URL] = []
+            
             for provider in providers {
+                group.enter()
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
+                    defer { group.leave() }
                     guard let data = item as? Data,
                           let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
                     
                     if url.pathExtension.lowercased() == "pdf" {
-                        guard let resolved = self.validateAndResolvePDF(url: url) else {
-                            DispatchQueue.main.async {
-                                let alert = NSAlert()
-                                alert.messageText = "Invalid PDF File"
-                                alert.informativeText = "The file '\(url.lastPathComponent)' is either not a valid PDF or exceeds the size limit."
-                                alert.alertStyle = .warning
-                                alert.runModal()
-                            }
-                            return
-                        }
-                        DispatchQueue.main.async {
-                            if self.fileURL == nil {
-                                self.fileURL = resolved
-                            } else {
-                                self.openWindow(value: resolved)
-                            }
+                        if let resolved = self.validateAndResolvePDF(url: url) {
+                            lock.lock()
+                            resolvedURLs.append(resolved)
+                            lock.unlock()
                         }
                     }
+                }
+            }
+            
+            group.notify(queue: .main) {
+                if !resolvedURLs.isEmpty {
+                    OpenQueue.shared.add(urls: resolvedURLs)
                 }
             }
             return true
@@ -920,6 +962,7 @@ struct ContentView: View {
             self.fileURL = nil
             pdfDocument = nil
             updateRegistry()
+            OpenQueue.shared.processNext()
             return
         }
         
@@ -933,6 +976,7 @@ struct ContentView: View {
         
         if let window = currentWindow {
             if focusWindow(showing: resolvedURL, excluding: window) {
+                OpenQueue.shared.processNext()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     window.close()
                 }
@@ -940,6 +984,7 @@ struct ContentView: View {
             }
         } else {
             if OpenDocumentsRegistry.shared.window(showing: resolvedURL) != nil {
+                OpenQueue.shared.processNext()
                 self.shouldCloseWindow = true
                 return
             }
@@ -950,6 +995,9 @@ struct ContentView: View {
             self.pdfDocument = doc
             self.totalPages = doc.pageCount
             self.currentPage = 1
+            if self.columnVisibility == .detailOnly {
+                self.columnVisibility = .all
+            }
             self.updateRegistry()
             
             // Force window to update its title and proxy icon
@@ -1051,6 +1099,12 @@ struct ContentView: View {
         if let oldURL = registeredURL, oldURL != fileURL {
             OpenDocumentsRegistry.shared.unregister(url: oldURL)
             registeredURL = nil
+        }
+        
+        if fileURL == nil {
+            OpenDocumentsRegistry.shared.unregister(window: window)
+            registeredURL = nil
+            return
         }
         
         // Register new URL
